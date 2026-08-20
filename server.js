@@ -86,6 +86,9 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/scan-progress' && req.method === 'GET') {
     return handleScanProgress(req, res);
   }
+  if (pathname === '/api/scan-result' && req.method === 'GET') {
+    return handleScanResult(req, res);
+  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
   }
@@ -139,8 +142,70 @@ function readBody(req) {
   });
 }
 
-// 扫描进度状态（用于轮询）
-const scanProgressMap = new Map();
+// ── 异步扫描 Job ──────────────────────────────────────────
+const scanJobMap = new Map();
+
+function createScanJob(rootPath, options) {
+  const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const job = {
+    scanId,
+    status: 'preparing',       // preparing → scanning → analyzing → completed | failed | cancelled
+    percent: 0,
+    files: 0,
+    dirs: 0,
+    scannedDirs: 0,
+    totalDirs: 0,
+    error: null,
+    result: null,
+    createdAt: Date.now(),
+  };
+
+  scanJobMap.set(scanId, job);
+
+  // 后台执行扫描
+  (async () => {
+    try {
+      job.status = 'scanning';
+
+      const onProgress = (p) => {
+        job.files = p.files || 0;
+        job.dirs = p.dirs || 0;
+        job.scannedDirs = p.scanned || 0;
+        job.totalDirs = p.total || 0;
+        if (p.percent !== undefined) job.percent = p.percent;
+        // 根据文件数估算进度（目录数可能为0时的回退方案）
+        if (job.totalDirs > 0) {
+          job.percent = Math.min(90, Math.round((job.scannedDirs / job.totalDirs) * 90));
+        } else if (job.files > 0) {
+          job.percent = Math.min(85, Math.min(85, job.files));
+        }
+      };
+
+      const result = await scanner.scanDirectory(rootPath, { ...options, onProgress });
+
+      job.status = 'analyzing';
+      job.percent = 92;
+
+      // 简单分析阶段标记
+      await new Promise(r => setTimeout(r, 50));
+
+      job.status = 'completed';
+      job.percent = 100;
+      job.result = result;
+      job.files = result.files.length;
+      job.dirs = result.stats?.totalDirs || 0;
+
+      // 30 秒后清理
+      setTimeout(() => scanJobMap.delete(scanId), 30000);
+    } catch (err) {
+      job.status = 'failed';
+      job.error = err.message;
+      setTimeout(() => scanJobMap.delete(scanId), 30000);
+    }
+  })();
+
+  return scanId;
+}
 
 async function handleScan(req, res) {
   try {
@@ -163,35 +228,37 @@ async function handleScan(req, res) {
       return fail(res, 400, '目录不存在或无法访问: ' + rootPath);
     }
 
-    const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    const progress = { scanId, percent: 0, done: false };
-
-    const onProgress = (p) => {
-      progress.percent = p.percent;
-      progress.files = p.files;
-      progress.scanned = p.scanned;
-      progress.total = p.total;
-    };
-
-    scanProgressMap.set(scanId, progress);
-
-    const result = await scanner.scanDirectory(rootPath, { ...options, onProgress });
-    progress.percent = 100;
-    progress.done = true;
-    progress.result = result;
-
-    // 5 秒后清理
-    setTimeout(() => scanProgressMap.delete(scanId), 5000);
-
-    ok(res, { ...result, scanId });
+    // 立即创建异步 job 并返回 scanId
+    const scanId = createScanJob(rootPath, options);
+    ok(res, { scanId, status: 'preparing' });
   } catch (err) { fail(res, 500, err.message); }
 }
 
 function handleScanProgress(req, res) {
   const scanId = url.parse(req.url, true).query.scanId;
-  const progress = scanProgressMap.get(scanId);
-  if (!progress) return fail(res, 404, '扫描进度不存在');
-  ok(res, { percent: progress.percent, done: progress.done, files: progress.files || 0 });
+  const job = scanJobMap.get(scanId);
+  if (!job) return fail(res, 404, '扫描任务不存在');
+  ok(res, {
+    scanId: job.scanId,
+    status: job.status,
+    percent: job.percent,
+    done: job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled',
+    files: job.files,
+    dirs: job.dirs,
+    scannedDirs: job.scannedDirs,
+    totalDirs: job.totalDirs,
+    error: job.error,
+  });
+}
+
+function handleScanResult(req, res) {
+  const scanId = url.parse(req.url, true).query.scanId;
+  const job = scanJobMap.get(scanId);
+  if (!job) return fail(res, 404, '扫描任务不存在');
+  if (job.status !== 'completed') {
+    return fail(res, 400, '扫描未完成，当前状态: ' + job.status);
+  }
+  ok(res, job.result);
 }
 
 async function handlePickFolder(req, res) {

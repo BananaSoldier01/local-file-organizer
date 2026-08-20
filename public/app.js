@@ -37,6 +37,7 @@ const API = {
 
   scan(rootPath, options) { return this.post('/api/scan', { rootPath, options }); },
   scanProgress(scanId) { return this.get('/api/scan-progress?scanId=' + encodeURIComponent(scanId)); },
+  scanResult(scanId) { return this.get('/api/scan-result?scanId=' + encodeURIComponent(scanId)); },
   pickFolder() { return this.post('/api/pick-folder', {}); },
   classify(files, config) { return this.post('/api/classify', { files, config }); },
   generatePlan(files, options) { return this.post('/api/plan', { files, options }); },
@@ -95,14 +96,17 @@ const state = {
   classifiedFiles: [], // 分类后的文件
   plan: null,          // 整理方案
   currentFolder: null,
-  excludedFiles: new Set(),    // 排除的文件路径
-  customTargetRoot: null,      // 自定义目标根目录
+  selectedFiles: new Set(),   // 用户选中的文件（用于批量操作）
+  excludedFiles: new Set(),   // 排除的文件路径（不参与整理）
+  customTargetRoot: null,     // 自定义目标根目录
   fileTypes: [],      // 文件类型列表
   settings: {},
   filters: {
     fileType: null,    // 当前选中的文件类型筛选
     risk: null,        // 当前选中的风险筛选
     search: '',
+    showExcluded: false, // 是否显示已排除的文件
+    reviewOnly: false,   // 只看需要确认的文件
   },
   sortColumn: null,
   sortDir: 1,
@@ -339,48 +343,88 @@ async function startScan(folderPath) {
   $('scan-detail').textContent = '已发现 0 个文件';
 
   try {
-    const scanResult = await API.scan(folderPath, {
+    // 1. 创建异步扫描任务，立即返回 scanId
+    const createResult = await API.scan(folderPath, {
       skipHidden: state.settings.skipHidden !== false,
       skipDirs: (state.settings.skipDirs || []),
     });
 
-    const scanId = scanResult.data.scanId;
+    const scanId = createResult.data.scanId;
+    if (!scanId) throw new Error('未获取到 scanId');
 
-    // 轮询真实进度
-    if (scanId) {
-      const pollInterval = setInterval(async () => {
-        try {
-          const prog = await API.scanProgress(scanId);
-          $('scan-percent').textContent = prog.data.percent + '%';
-          if (prog.data.done) {
-            clearInterval(pollInterval);
+    // 2. 轮询真实进度
+    const pollInterval = setInterval(async () => {
+      try {
+        const prog = await API.scanProgress(scanId);
+        const d = prog.data;
+        $('scan-percent').textContent = d.percent + '%';
+
+        // 显示详细进度信息
+        if (d.status === 'preparing') {
+          $('scan-text').textContent = '准备扫描…';
+          $('scan-detail').textContent = '正在遍历目录结构';
+        } else if (d.status === 'scanning') {
+          $('scan-text').textContent = '正在扫描…';
+          if (d.totalDirs > 0) {
+            $('scan-detail').textContent = `已扫描 ${d.scannedDirs || 0} / ${d.totalDirs} 个目录，${d.files || 0} 个文件`;
+          } else {
+            $('scan-detail').textContent = `已发现 ${d.files || 0} 个文件`;
           }
-        } catch (_) { /* 忽略轮询错误 */ }
-      }, 100);
+        } else if (d.status === 'analyzing') {
+          $('scan-text').textContent = '正在分析…';
+          $('scan-detail').textContent = `已发现 ${d.files || 0} 个文件，正在分析`;
+        } else if (d.status === 'completed') {
+          $('scan-text').textContent = '扫描完成';
+          $('scan-detail').textContent = `共 ${d.files || 0} 个文件`;
+        } else if (d.status === 'failed') {
+          $('scan-text').textContent = '扫描失败';
+          $('scan-detail').textContent = d.error || '未知错误';
+        }
+
+        if (d.done) {
+          clearInterval(pollInterval);
+        }
+      } catch (_) { /* 忽略轮询错误 */ }
+    }, 150);
+
+    // 3. 等待扫描完成
+    let retries = 0;
+    while (retries < 200) {
+      const prog = await API.scanProgress(scanId);
+      if (prog.data.done) {
+        if (prog.data.status === 'failed') {
+          throw new Error(prog.data.error || '扫描失败');
+        }
+        break;
+      }
+      await new Promise(r => setTimeout(r, 200));
+      retries++;
     }
+    if (retries >= 200) throw new Error('扫描超时');
 
-    $('scan-percent').textContent = '100%';
-
+    // 4. 获取扫描结果
+    const scanResult = await API.scanResult(scanId);
     state.files = scanResult.data.files;
     state.currentFolder = folderPath;
 
-    // 分类
+    // 5. 分类
     $('scan-text').textContent = '正在分析…';
     $('scan-detail').textContent = `已发现 ${state.files.length} 个文件，正在分类`;
 
     const classifyResult = await API.classify(state.files, {
       llm: state.settings.llm,
+      detectProjects: true,
       context: { dirs: [...new Set(state.files.map(f => f.dir))].slice(0, 20) },
     });
 
     state.classifiedFiles = classifyResult.data;
 
-    // 生成方案
+    // 6. 生成方案
     state.plan = (await API.generatePlan(state.classifiedFiles, {
       targetRoot: state.customTargetRoot,
     })).data;
 
-    // 更新 UI
+    // 7. 更新 UI
     updateSidebarStats();
     $('topbar-path').textContent = folderPath;
     $('custom-target-input').value = state.customTargetRoot || '';
@@ -411,8 +455,12 @@ function updateSidebarStats() {
 function getFilteredFiles() {
   let files = state.classifiedFiles;
 
-  // 排除的文件
-  files = files.filter(f => !state.excludedFiles.has(f.path));
+  // 已排除的文件：默认不显示，showExcluded 时显示
+  if (state.filters.showExcluded) {
+    files = files.filter(f => state.excludedFiles.has(f.path));
+  } else {
+    files = files.filter(f => !state.excludedFiles.has(f.path));
+  }
 
   // 文件类型筛选
   if (state.filters.fileType) {
@@ -422,6 +470,14 @@ function getFilteredFiles() {
   // 风险筛选
   if (state.filters.risk) {
     files = files.filter(f => f.riskFlag && f.riskFlag.includes(state.filters.risk));
+  }
+
+  // 只看需要确认的文件（低置信度 + 有风险标记）
+  if (state.filters.reviewOnly) {
+    files = files.filter(f =>
+      (f.confidence !== undefined && f.confidence < 0.7) ||
+      (f.riskFlag && f.riskFlag.length > 0)
+    );
   }
 
   // 搜索
@@ -446,6 +502,7 @@ function renderWorkspace() {
   if (files.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-secondary);">没有匹配的文件</td></tr>';
     updateFooter(0, 0);
+    updateSelectionUI();
     return;
   }
 
@@ -462,11 +519,17 @@ function renderWorkspace() {
 
   updateFooter(files.length, moveCount, moveSize);
   $('btn-execute').disabled = moveCount === 0;
+  updateSelectionUI();
 }
 
 function renderWorkspaceRow(file) {
   const tr = document.createElement('tr');
+
+  // 排除状态：被排除的文件显示为 excluded 样式
   if (state.excludedFiles.has(file.path)) tr.classList.add('excluded');
+
+  // 选中状态：用户选中的文件显示为 selected 样式
+  if (state.selectedFiles.has(file.path)) tr.classList.add('selected');
 
   const riskDots = (file.riskFlag || []).map(r => {
     const labels = { sensitive: '敏感', large: '大文件', temp_likely: '临时', no_extension: '无扩展名', possible_duplicate: '可能重复' };
@@ -475,15 +538,22 @@ function renderWorkspaceRow(file) {
   }).join('');
 
   // 当前建议目标（可能被用户修改过）
-  const currentTarget = state.plan?.moves.find(m => m.from === file.path)?.to
-    ? path.basename(path.dirname(m.to))
+  // 先获取对应的 move，再读取属性（修复 m is not defined 作用域错误）
+  const move = state.plan?.moves.find(m => m.from === file.path);
+  const currentTarget = move
+    ? path.basename(path.dirname(move.to))
     : (file.suggestedTarget || '其他');
 
+  // checkbox 表示"选中"（用于批量操作），不是"排除"
+  const isSelected = state.selectedFiles.has(file.path);
+  const isExcluded = state.excludedFiles.has(file.path);
+
   tr.innerHTML =
-    '<td class="ws-check"><input type="checkbox" ' + (state.excludedFiles.has(file.path) ? '' : '') + '></td>' +
+    '<td class="ws-check"><input type="checkbox" ' + (isSelected ? 'checked' : '') + (isExcluded ? ' disabled' : '') + '></td>' +
     '<td class="ws-name">' +
       '<span class="file-icon">' + getFileIcon(file.name, file.fileType) + '</span>' +
       '<span class="ws-file-name">' + escapeHtml(file.name) + '</span>' +
+      (isExcluded ? ' <span class="excluded-badge">已排除</span>' : '') +
     '</td>' +
     '<td><span class="ws-type-badge">' + escapeHtml(file.fileTypeLabel || file.fileType) + '</span></td>' +
     '<td><input class="ws-theme-input" type="text" value="' + escapeHtml(file.contentTheme || '') + '" placeholder="主题" spellcheck="false"></td>' +
@@ -496,11 +566,11 @@ function renderWorkspaceRow(file) {
   const checkbox = tr.querySelector('input[type="checkbox"]');
   checkbox.addEventListener('change', () => {
     if (checkbox.checked) {
-      state.excludedFiles.add(file.path);
+      state.selectedFiles.add(file.path);
     } else {
-      state.excludedFiles.delete(file.path);
+      state.selectedFiles.delete(file.path);
     }
-    renderWorkspace();
+    updateSelectionUI();
   });
 
   // 主题修改
@@ -553,32 +623,60 @@ function getFileIcon(name, fileType) {
 
 // ── 全选 / 排除 ──────────────────────────────────────────
 function toggleSelectAll() {
-  const checkboxes = document.querySelectorAll('#workspace-tbody input[type="checkbox"]');
+  const checkboxes = document.querySelectorAll('#workspace-tbody input[type="checkbox"]:not(:disabled)');
   const allChecked = Array.from(checkboxes).every(c => c.checked);
   checkboxes.forEach(c => c.checked = !allChecked);
 
-  // 同步到 excludedFiles
+  // 同步到 selectedFiles
   const visibleFiles = getFilteredFiles();
+  state.selectedFiles.clear();
   if (!allChecked) {
-    // 选中所有
-    for (const f of visibleFiles) state.excludedFiles.delete(f.path);
-  } else {
-    // 取消全选
-    for (const f of visibleFiles) state.excludedFiles.add(f.path);
+    // 全选：将所有可见文件加入 selectedFiles
+    for (const f of visibleFiles) {
+      if (!state.excludedFiles.has(f.path)) state.selectedFiles.add(f.path);
+    }
   }
   renderWorkspace();
 }
 
-function excludeSelected() {
-  const checkboxes = document.querySelectorAll('#workspace-tbody input[type="checkbox"]:checked');
-  checkboxes.forEach(c => {
-    const tr = c.closest('tr');
-    const name = tr.querySelector('.ws-file-name').textContent;
-    const file = state.classifiedFiles.find(f => f.name === name);
-    if (file) state.excludedFiles.add(file.path);
-  });
+function clearSelection() {
+  state.selectedFiles.clear();
   renderWorkspace();
-  toast('已排除 ' + checkboxes.length + ' 个文件', 'success');
+  updateSelectionUI();
+}
+
+function excludeSelected() {
+  if (state.selectedFiles.size === 0) {
+    toast('请先勾选要排除的文件', 'warning');
+    return;
+  }
+  // 将选中的文件移到 excludedFiles
+  for (const path of state.selectedFiles) {
+    state.excludedFiles.add(path);
+  }
+  const count = state.selectedFiles.size;
+  state.selectedFiles.clear();
+  renderWorkspace();
+  updateSelectionUI();
+  toast('已排除 ' + count + ' 个文件', 'success');
+}
+
+function restoreExcluded() {
+  // 恢复所有已排除的文件
+  if (state.excludedFiles.size === 0) {
+    toast('没有已排除的文件', 'warning');
+    return;
+  }
+  state.excludedFiles.clear();
+  renderWorkspace();
+  updateSelectionUI();
+  toast('已恢复所有排除的文件', 'success');
+}
+
+function updateSelectionUI() {
+  const count = state.selectedFiles.size;
+  const btn = $('btn-exclude-selected');
+  if (btn) btn.textContent = '排除选中' + (count > 0 ? ' (' + count + ')' : '');
 }
 
 // ── 重新生成方案 ──────────────────────────────────────────

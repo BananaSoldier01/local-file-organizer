@@ -254,12 +254,31 @@ function classifyByRules(file, context = {}) {
   // ── suggestedTarget ──
   const suggestedTarget = suggestTarget(file, fileType, contentTheme, context);
 
-  // ── 综合置信度 ──
-  const confidence = Math.min(0.95,
-    fileTypeConfidence * 0.5 +
-    (themeConfidence > 0 ? themeConfidence * 0.3 : 0.2) +
-    (riskFlags.length > 0 ? 0.05 : 0)
-  );
+  // ── 整理建议置信度 ──
+  // 重新定义：表示"有多确信这个文件应该移动到建议的目标目录"
+  // 不再混合 risk flag 等无关因素
+  // 三级制：高可信(≥0.7) / 建议确认(0.4-0.7) / 需要判断(<0.4)
+  let confidence;
+  if (fileTypeConfidence >= 0.9 && themeConfidence >= 0.5) {
+    // 类型明确 + 主题明确 → 高可信
+    confidence = 0.85;
+  } else if (fileTypeConfidence >= 0.9 && themeConfidence < 0.5) {
+    // 类型明确但主题不明确 → 建议确认
+    confidence = 0.65;
+  } else if (fileTypeConfidence < 0.9 && themeConfidence >= 0.5) {
+    // 类型不确定但主题明确 → 建议确认
+    confidence = 0.55;
+  } else if (fileTypeConfidence < 0.9 && themeConfidence < 0.5) {
+    // 都不明确 → 需要判断
+    confidence = 0.35;
+  } else {
+    confidence = 0.5;
+  }
+
+  // 有风险标记的文件降低置信度（用户需要确认）
+  if (riskFlags.includes('sensitive') || riskFlags.includes('no_extension')) {
+    confidence = Math.min(confidence, 0.4);
+  }
 
   return {
     fileType,
@@ -457,7 +476,7 @@ async function classifyFiles(files, config = {}) {
     };
   });
 
-  // 2. LLM 语义增强
+  // 2. LLM 语义增强（分批处理，支持任意数量文件）
   if (config.llm && config.llm.enabled && config.llm.apiKey) {
     try {
       // 对低置信度或有风险标记的文件进行 LLM 分析
@@ -468,34 +487,53 @@ async function classifyFiles(files, config = {}) {
         r.contentTheme === '默认'
       );
 
-      if (needsLLM.length > 0 && needsLLM.length <= 50) {
-        const llmResults = await analyzeWithLLM(needsLLM, config.llm, context);
-        for (const llmResult of llmResults) {
-          const idx = results.findIndex(r => r.path === llmResult.path);
-          if (idx >= 0) {
-            const r = results[idx];
-            // 合并 LLM 结果（LLM 判断优先于规则）
-            if (llmResult.fileType && llmResult.fileType !== r.fileType) {
-              r.fileType = llmResult.fileType;
-              r.fileTypeLabel = FILE_TYPES[llmResult.fileType]?.label || llmResult.fileType;
+      if (needsLLM.length > 0) {
+        // 分批处理：每批 20 个文件，避免单次请求过大
+        const BATCH_SIZE = 20;
+        const batches = [];
+        for (let i = 0; i < needsLLM.length; i += BATCH_SIZE) {
+          batches.push(needsLLM.slice(i, i + BATCH_SIZE));
+        }
+
+        let totalProcessed = 0;
+        for (let bi = 0; bi < batches.length; bi++) {
+          const batch = batches[bi];
+          try {
+            const llmResults = await analyzeWithLLM(batch, config.llm, context);
+            for (const llmResult of llmResults) {
+              const idx = results.findIndex(r => r.path === llmResult.path);
+              if (idx >= 0) {
+                const r = results[idx];
+                if (llmResult.fileType && llmResult.fileType !== r.fileType) {
+                  r.fileType = llmResult.fileType;
+                  r.fileTypeLabel = FILE_TYPES[llmResult.fileType]?.label || llmResult.fileType;
+                }
+                if (llmResult.contentTheme && llmResult.contentTheme !== '默认') {
+                  r.contentTheme = llmResult.contentTheme;
+                }
+                if (llmResult.isSensitive) {
+                  if (!r.riskFlag.includes('sensitive')) r.riskFlag.push('sensitive');
+                }
+                if (llmResult.suggestedTarget) {
+                  r.suggestedTarget = llmResult.suggestedTarget;
+                }
+                r.confidence = llmResult.confidence || r.confidence;
+                r.method = 'llm';
+                r.reason = llmResult.reason || r.reason;
+              }
             }
-            if (llmResult.contentTheme && llmResult.contentTheme !== '默认') {
-              r.contentTheme = llmResult.contentTheme;
-            }
-            if (llmResult.isSensitive) {
-              if (!r.riskFlag.includes('sensitive')) r.riskFlag.push('sensitive');
-            }
-            if (llmResult.suggestedTarget) {
-              r.suggestedTarget = llmResult.suggestedTarget;
-            }
-            r.confidence = llmResult.confidence || r.confidence;
-            r.method = 'llm';
-            r.reason = llmResult.reason || r.reason;
+            totalProcessed += llmResults.length;
+          } catch (batchErr) {
+            // 单 batch 失败不影响其他 batch，记录警告继续
+            console.warn(`[classifier] LLM batch ${bi + 1}/${batches.length} 失败:`, batchErr.message);
           }
+        }
+        if (totalProcessed > 0) {
+          console.log(`[classifier] LLM 分析完成: ${totalProcessed}/${needsLLM.length} 个文件`);
         }
       }
     } catch (err) {
-      console.warn('[classifier] LLM 分析失败，使用规则结果:', err.message);
+      console.warn('[classifier] LLM 分析整体失败，使用规则结果:', err.message);
     }
   }
 
