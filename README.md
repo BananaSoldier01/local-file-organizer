@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.1 · Release Hardening · 个人测试项目。
+> V0.3.2 · Correctness & Safety · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -74,6 +74,19 @@ node server.js
 - Node.js HTTP 服务器（零依赖）
 - 原生 fs 模块
 - 纯 HTML/CSS/JS（无框架）
+
+## V0.3.2 变化（Correctness & Safety）
+
+- **Scan 真实进度**：修复 `countDirs` 未调用导致 `totalDirs=0`，现在显示真实目录遍历进度
+- **Classify 异步 Job**：分批处理（20 批次），单批失败不影响其他批次，支持 cancel/partial
+- **统一轮询入口**：`GET /api/job?type=scan|classify|execute&id=xxx`，删除双轮询和硬超时
+- **Execute 可信 planId**：服务器保存 `planId → sourceRoot` 映射，客户端不再提交任意路径
+- **服务端路径验证**：`realpath` 越界检查，拒绝 `../` 和符号链接逃逸
+- **Execute Cancel 接入 UI**：执行中可取消，`cancelled_partial` 状态
+- **AI 隐私全面脱敏**：fileList / context.dirs / project grouping 均不发送绝对路径
+- **Execute Job 类型修复**：`failedCount`/`skippedCount`（数值）与 `failed[]`/`skipped[]`（数组）分离
+- **API Key 防覆盖**：`maskSettings` 始终删除 `apiKey` 字段，GET 只返回 `apiKeyConfigured`/`apiKeyPreview`
+- **集成测试**：`npm run test:integration` 30/30 通过，覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
 
 ## V0.3.1 变化（Release Hardening）
 
