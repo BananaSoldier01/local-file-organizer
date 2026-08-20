@@ -4,7 +4,8 @@
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test:smoke": "node test/smoke.js"
   },
   "keywords": [
     "file-organizer",
