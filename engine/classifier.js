@@ -598,7 +598,19 @@ function getFileTypes() {
  */
 async function classifyBatch(files, config = {}) {
   // 先走规则分类
-  const results = classifyByRules(files);
+  let results;
+  try {
+    results = files.map(f => {
+      const ruleResult = classifyByRules(f, {});
+      return {
+        ...f,           // 保留原始文件元数据（path/name/dir/size/extension）
+        ...ruleResult,   // 覆盖分类结果
+      };
+    });
+  } catch (err) {
+    console.error('[classifier] classifyByRules failed:', err.message, err.stack);
+    throw err;
+  }
 
   // LLM 辅助分析
   if (config.llm && config.llm.enabled && config.llm.apiKey) {

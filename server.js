@@ -28,17 +28,16 @@ function maskSettings(settings) {
   // 深拷贝，API Key 替换为配置状态标记
   const masked = JSON.parse(JSON.stringify(settings));
   if (masked.llm) {
-    if (masked.llm.apiKey) {
-      const key = masked.llm.apiKey;
-      masked.llm.apiKeyConfigured = true;
-      masked.llm.apiKeyPreview = key.length > 8
-        ? key.slice(0, 4) + '••••••••••' + key.slice(-4)
-        : '••••';
-      delete masked.llm.apiKey;
+    const key = masked.llm.apiKey;
+    masked.llm.apiKeyConfigured = !!(key && key.length > 0);
+    if (key && key.length > 8) {
+      masked.llm.apiKeyPreview = key.slice(0, 4) + '••••••••••' + key.slice(-4);
+    } else if (key && key.length > 0) {
+      masked.llm.apiKeyPreview = '••••';
     } else {
-      masked.llm.apiKeyConfigured = false;
       masked.llm.apiKeyPreview = '';
     }
+    delete masked.llm.apiKey;
   }
   return masked;
 }

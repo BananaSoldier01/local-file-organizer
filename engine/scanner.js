@@ -155,6 +155,9 @@ async function scanDirectory(rootPath, options = {}) {
     // 继续
   }
 
+  // 预遍历统计目录数，用于真实进度
+  await countDirs(rootPath, 0);
+
   await walk(rootPath, 0);
 
   return {

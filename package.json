@@ -1,11 +1,12 @@
 {
   "name": "file-organizer",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test:smoke": "node test/smoke.js"
+    "test:smoke": "node test/smoke.js",
+    "test:integration": "node test/integration.js"
   },
   "keywords": [
     "file-organizer",
