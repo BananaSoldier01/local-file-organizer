@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3 · 个人测试项目。
+> V0.3.1 · Release Hardening · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -74,6 +74,17 @@ node server.js
 - Node.js HTTP 服务器（零依赖）
 - 原生 fs 模块
 - 纯 HTML/CSS/JS（无框架）
+
+## V0.3.1 变化（Release Hardening）
+
+- **Execute 改为异步 Job**：POST 创建 → 后台执行 → 轮询进度 → 完成/部分/失败/取消
+- **真实进度**：Scan 和 Execute 均不再模拟进度，显示真实计数
+- **Execute 可取消**：cancelled_partial 状态，已完成部分可 Undo
+- **API Key 防覆盖**：GET settings 不返回真实 Key，save 未提供新 Key 时保留原值
+- **AI 隐私**：LLM prompt 只发送内部 ID + 目录名，不发送绝对路径
+- **服务绑定**：仅监听 127.0.0.1，CORS 仅允许 localhost
+- **Smoke Test**：`npm run test:smoke` 自动检查 DOM/JS/HTML 一致性
+- **状态重置**：newScan 完整重置 selectedFiles/filters/projectGroups
 
 ## V0.3 变化
 
