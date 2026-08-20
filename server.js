@@ -302,7 +302,8 @@ async function handleClassify(req, res) {
     const settings = loadSettings();
     const llmConfig = (config && config.llm) || settings.llm;
     const context = (config && config.context) || {};
-    const results = await classifier.classifyFiles(files, { llm: llmConfig, context });
+    const detectProjects = (config && config.detectProjects) || false;
+    const results = await classifier.classifyFiles(files, { llm: llmConfig, context, detectProjects });
     ok(res, results);
   } catch (err) { fail(res, 500, err.message); }
 }

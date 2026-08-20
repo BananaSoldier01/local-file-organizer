@@ -135,7 +135,36 @@
           </div>
         </div>
 
-        <div class="workspace-table-wrap">
+        <!-- Review Queue 概览 -->
+        <div class="review-queue" id="review-queue" style="display:none">
+          <div class="rq-item rq-high" data-filter="" onclick="setFilter('reviewOnly', false)">
+            <span class="rq-count" id="rq-high-count">0</span>
+            <span class="rq-label">可以接受</span>
+            <span class="rq-desc">高可信，建议直接执行</span>
+          </div>
+          <div class="rq-item rq-medium" onclick="setFilter('reviewOnly', true)">
+            <span class="rq-count" id="rq-medium-count">0</span>
+            <span class="rq-label">建议确认</span>
+            <span class="rq-desc">存在一定歧义</span>
+          </div>
+          <div class="rq-item rq-low" onclick="setFilter('reviewOnly', true)">
+            <span class="rq-count" id="rq-low-count">0</span>
+            <span class="rq-label">无法判断</span>
+            <span class="rq-desc">需要你决定</span>
+          </div>
+        </div>
+
+        <!-- 工具栏筛选按钮 -->
+        <div class="workspace-filters">
+          <button class="filter-chip" id="filter-review-only" onclick="toggleFilter('reviewOnly')">
+            只看需要确认
+          </button>
+          <button class="filter-chip" id="filter-show-excluded" onclick="toggleFilter('showExcluded')">
+            显示已排除
+          </button>
+        </div>
+
+<div class="workspace-table-wrap">
           <table class="workspace-table">
             <thead>
               <tr>

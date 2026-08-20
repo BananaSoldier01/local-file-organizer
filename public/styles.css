@@ -255,6 +255,63 @@ html, body {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+/* ── Review Queue ───────────────────────────────────────── */
+.review-queue {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.rq-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.rq-item:hover { border-color: var(--text-secondary); background: var(--bg-hover); }
+
+.rq-count {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rq-high .rq-count { color: var(--success); }
+.rq-medium .rq-count { color: var(--warning); }
+.rq-low .rq-count { color: var(--danger); }
+
+.rq-label { font-size: 12px; font-weight: 500; }
+.rq-desc { font-size: 11px; color: var(--text-secondary); }
+
+/* ── 筛选芯片 ───────────────────────────────────────────── */
+.workspace-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.filter-chip:hover { border-color: var(--text-secondary); color: var(--text-primary); }
+.filter-chip.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* ── 文件表格 ──────────────────────────────────────────── */
 .workspace-table-wrap {
   border: 1px solid var(--border);

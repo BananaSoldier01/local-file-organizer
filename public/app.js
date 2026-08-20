@@ -497,6 +497,15 @@ function renderWorkspace() {
   const tbody = $('workspace-tbody');
   tbody.innerHTML = '';
 
+  // 更新 Review Queue
+  updateReviewQueue();
+
+  // 更新筛选芯片状态
+  const reviewChip = $('filter-review-only');
+  const excludedChip = $('filter-show-excluded');
+  if (reviewChip) reviewChip.classList.toggle('active', state.filters.reviewOnly);
+  if (excludedChip) excludedChip.classList.toggle('active', state.filters.showExcluded);
+
   const files = getFilteredFiles();
 
   if (files.length === 0) {
@@ -596,6 +605,42 @@ function updateFooter(total, moves, size) {
   $('footer-count').textContent = total;
   $('footer-moves').textContent = moves;
   $('footer-size').textContent = formatSize(size || 0);
+}
+
+// ── Review Queue ──────────────────────────────────────────
+function updateReviewQueue() {
+  const rq = $('review-queue');
+  if (!rq || !state.classifiedFiles.length) {
+    if (rq) rq.style.display = 'none';
+    return;
+  }
+
+  let high = 0, medium = 0, low = 0;
+  for (const f of state.classifiedFiles) {
+    if (state.excludedFiles.has(f.path)) continue;
+    if (f.confidence >= 0.7) high++;
+    else if (f.confidence >= 0.4) medium++;
+    else low++;
+  }
+
+  $('rq-high-count').textContent = high;
+  $('rq-medium-count').textContent = medium;
+  $('rq-low-count').textContent = low;
+  rq.style.display = 'flex';
+}
+
+function setFilter(filterName, value) {
+  state.filters[filterName] = value;
+  renderWorkspace();
+  updateReviewQueue();
+}
+
+function toggleFilter(filterName) {
+  state.filters[filterName] = !state.filters[filterName];
+  const chip = $('filter-' + filterName);
+  if (chip) chip.classList.toggle('active', state.filters[filterName]);
+  renderWorkspace();
+  updateReviewQueue();
 }
 
 function getFileIcon(name, fileType) {
