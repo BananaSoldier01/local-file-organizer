@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本地文件智能整理器</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ═══════════ 顶部栏 ═══════════ -->
+  <header class="topbar">
+    <div class="win-btns"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+    <div class="topbar-brand">
+      <svg class="brand-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 5a1 1 0 0 1 1-1h6l2 3h7a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5z"/>
+        <path d="M9 13h6"/><path d="M9 17h4"/>
+      </svg>
+      <span class="brand-name">文件整理器</span>
+    </div>
+    <div class="topbar-path">
+      <span class="path-label" id="topbar-path">未选择文件夹</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="btn-settings" title="设置">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ═══════════ 主布局：边栏 + 内容 ═══════════ -->
+  <div class="main-layout">
+
+    <!-- 侧边栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">文件夹</div>
+        <div class="sidebar-item active" data-state="empty">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a1 1 0 0 1 1-1h6l2 3h7a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5z"/></svg>
+          开始整理
+        </div>
+      </div>
+      <div class="sidebar-section" id="sidebar-categories" style="display:none">
+        <div class="sidebar-section-title">分类</div>
+        <div id="sidebar-category-list"></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">操作</div>
+        <div class="sidebar-item" id="sidebar-history">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.09 15.9"/><path d="M3 5v5h5"/></svg>
+          操作历史
+        </div>
+        <div class="sidebar-item" id="sidebar-settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          设置
+        </div>
+      </div>
+    </aside>
+
+    <!-- ═══════════ 主内容区 ═══════════ -->
+    <main class="content" id="content">
+
+      <!-- ── 空状态 ── -->
+      <section class="state state-empty" id="state-empty">
+        <div class="empty-illustration">
+          <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
+            <path d="M4 5a1 1 0 0 1 1-1h6l2 3h7a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5z"/>
+            <path d="M9 13h6"/><path d="M9 17h4"/>
+            <path d="M17 9l-3 3 3 3"/>
+          </svg>
+        </div>
+        <h2 class="empty-title">选择一个文件夹开始整理</h2>
+        <p class="empty-sub">扫描其中的文件，生成分类方案，一键整理</p>
+        <div class="toolbar" style="max-width:480px;margin:8px 0 0;width:100%;">
+          <input type="text" id="folder-path-input" class="folder-path-input" placeholder="点击「开始整理」选择文件夹，或手动输入路径" spellcheck="false" style="border:none;outline:none;font-size:12px;font-family:var(--font-mono);color:var(--text-primary);background:transparent;flex:1;">
+          <div class="sep"></div>
+          <button class="btn btn-primary" id="btn-select-folder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            开始整理
+          </button>
+        </div>
+      </section>
+
+      <!-- ── 扫描状态 ── -->
+      <section class="state state-scanning" id="state-scanning">
+        <div class="scan-progress">
+          <div class="progress-ring">
+            <svg width="60" height="60" viewBox="0 0 64 64">
+              <circle class="progress-bg" cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="3" opacity="0.12"/>
+              <circle class="progress-fill" cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="169.6" transform="rotate(-90 32 32)"/>
+            </svg>
+            <span class="progress-percent" id="scan-percent">0%</span>
+          </div>
+          <p class="scan-text" id="scan-text">正在扫描…</p>
+          <p class="scan-detail" id="scan-detail">已发现 0 个文件</p>
+        </div>
+      </section>
+
+      <!-- ── 扫描结果总览 ── -->
+      <section class="state state-results" id="state-results">
+        <div class="results-toolbar">
+          <input type="text" id="custom-target-input" placeholder="整理到哪个目录？留空则使用当前文件夹" spellcheck="false">
+          <div class="sep"></div>
+          <button class="btn btn-secondary" id="btn-rescan-results">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.09 15.9"/><path d="M3 5v5h5"/></svg>
+            重新扫描
+          </button>
+        </div>
+        <div class="results-stats">
+          <div class="stat"><div class="v" id="results-total">0</div><div class="l">文件</div></div>
+          <div class="stat"><div class="v" id="results-cats">0</div><div class="l">分类</div></div>
+          <div class="stat"><div class="v" id="results-size">0 B</div><div class="l">总大小</div></div>
+        </div>
+        <div class="results-table-wrap">
+          <table class="results-table" id="scan-results-list">
+            <thead>
+              <tr>
+                <th class="th-icon"></th>
+                <th>文件名</th>
+                <th class="th-size">大小</th>
+                <th class="th-date">修改时间</th>
+                <th>所在目录</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="results-footer">
+          <button class="btn btn-secondary" id="btn-rescan-results2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.09 15.9"/><path d="M3 5v5h5"/></svg>
+            重新扫描
+          </button>
+          <button class="btn btn-primary" id="btn-view-plan">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            查看整理方案
+          </button>
+        </div>
+      </section>
+
+      <!-- ── 整理方案 ── -->
+      <section class="state state-plan" id="state-plan">
+        <div class="plan-stats">
+          <div class="stat-item">
+            <span class="stat-value" id="stat-total">0</span>
+            <span class="stat-label">文件</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-categories">0</span>
+            <span class="stat-label">分类</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-moves">0</span>
+            <span class="stat-label">待移动</span>
+          </div>
+          <div class="stat-item" style="margin-left:auto">
+            <span class="stat-value" id="plan-target-info" style="font-size:12px;color:var(--text-secondary)">—</span>
+            <span class="stat-label">目标目录</span>
+          </div>
+        </div>
+        <div class="file-list" id="category-list"></div>
+        <div class="empty-state-sm" id="plan-empty">
+          <p>所有文件已在正确位置，无需整理</p>
+        </div>
+      </section>
+
+      <!-- ── 执行状态 ── -->
+      <section class="state state-executing" id="state-executing">
+        <div class="execute-progress">
+          <div class="progress-bar"><div class="progress-bar-fill" id="execute-progress-fill" style="width:0%"></div></div>
+          <p class="execute-text" id="execute-text">正在整理文件…</p>
+          <p class="execute-detail" id="execute-detail">0 / 0</p>
+        </div>
+      </section>
+
+      <!-- ── 完成状态 ── -->
+      <section class="state state-done" id="state-done">
+        <div class="done-summary">
+          <svg class="done-check" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
+          <h2 class="done-title" id="done-title">整理完成</h2>
+          <p class="done-detail" id="done-detail">已移动 0 个文件</p>
+        </div>
+        <div class="done-actions">
+          <button class="btn btn-secondary" id="btn-new-scan">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.09 15.9"/><path d="M3 5v5h5"/></svg>
+            新的扫描
+          </button>
+          <button class="btn btn-primary" id="btn-undo-last">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.09 15.9"/><path d="M3 5v5h5"/></svg>
+            撤销
+          </button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ═══════════ 底部操作栏 ═══════════ -->
+  <footer class="bottombar" id="bottombar">
+    <div class="bottombar-info">
+      <span id="bottombar-path"></span>
+    </div>
+    <div class="bottombar-actions">
+      <button class="btn btn-secondary" id="btn-back">返回</button>
+      <button class="btn btn-primary" id="btn-execute">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        开始整理
+      </button>
+    </div>
+  </footer>
+
+  <!-- ═══════════ Toast ═══════════ -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- ═══════════ 历史面板 ═══════════ -->
+  <div class="history-panel" id="history-panel">
+    <div class="history-panel-header">
+      <h3>操作历史</h3>
+      <button class="icon-btn" id="btn-close-history" title="关闭">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="history-panel-body">
+      <div class="history-list" id="history-list"></div>
+    </div>
+    <div class="history-panel-footer">
+      <button class="btn-danger-text" id="btn-clear-history">清空历史</button>
+    </div>
+  </div>
+
+  <!-- ═══════════ 遮罩层 ═══════════ -->
+  <div class="backdrop" id="backdrop"></div>
+
+  <!-- ═══════════ 设置面板 ═══════════ -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-panel-header">
+      <h3>设置</h3>
+      <button class="icon-btn" id="btn-close-settings" title="关闭">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="settings-panel-body">
+      <div class="settings-section">
+        <h4>AI 辅助分类</h4>
+        <label class="toggle">
+          <input type="checkbox" id="setting-llm-enabled">
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">启用大模型辅助</span>
+        </label>
+        <div class="settings-field">
+          <label>API 端点</label>
+          <input type="text" id="setting-llm-endpoint" placeholder="https://api.deepseek.com/v1/chat/completions">
+        </div>
+        <div class="settings-field">
+          <label>API 密钥</label>
+          <input type="password" id="setting-llm-apikey" placeholder="sk-...">
+        </div>
+        <div class="settings-field">
+          <label>模型</label>
+          <input type="text" id="setting-llm-model" placeholder="deepseek-chat">
+        </div>
+        <p class="settings-hint">AI 会辅助判断文件名含义不明确的文件。不启用则使用规则分类。</p>
+      </div>
+      <div class="settings-section">
+        <h4>整理选项</h4>
+        <label class="toggle">
+          <input type="checkbox" id="setting-skip-hidden">
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">跳过隐藏文件</span>
+        </label>
+        <div class="settings-field">
+          <label>冲突处理</label>
+          <select id="setting-conflict">
+            <option value="skip">跳过（保留已有文件）</option>
+            <option value="rename">重命名（添加序号）</option>
+            <option value="overwrite">覆盖（谨慎使用）</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="settings-panel-footer">
+      <button class="btn btn-primary" id="btn-save-settings">保存设置</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════ 模板 ═══════════ -->
+<template id="template-file-row">
+  <div class="file-row">
+    <div class="file-check"><input type="checkbox" title="排除此文件"></div>
+    <div class="file-icon">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h4"/>
+      </svg>
+    </div>
+    <div class="file-info">
+      <div class="file-name"></div>
+      <div class="file-meta"></div>
+    </div>
+    <select class="file-category-select"><option value="">— 选择分类 —</option></select>
+    <span class="file-reason" style="display:none"></span>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>
