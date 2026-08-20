@@ -83,6 +83,9 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/scan' && req.method === 'POST') {
     return await handleScan(req, res);
   }
+  if (pathname === '/api/scan-progress' && req.method === 'GET') {
+    return handleScanProgress(req, res);
+  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
   }
@@ -136,6 +139,9 @@ function readBody(req) {
   });
 }
 
+// 扫描进度状态（用于轮询）
+const scanProgressMap = new Map();
+
 async function handleScan(req, res) {
   try {
     const body = await readBody(req);
@@ -157,9 +163,35 @@ async function handleScan(req, res) {
       return fail(res, 400, '目录不存在或无法访问: ' + rootPath);
     }
 
-    const result = await scanner.scanDirectory(rootPath, options);
-    ok(res, result);
+    const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const progress = { scanId, percent: 0, done: false };
+
+    const onProgress = (p) => {
+      progress.percent = p.percent;
+      progress.files = p.files;
+      progress.scanned = p.scanned;
+      progress.total = p.total;
+    };
+
+    scanProgressMap.set(scanId, progress);
+
+    const result = await scanner.scanDirectory(rootPath, { ...options, onProgress });
+    progress.percent = 100;
+    progress.done = true;
+    progress.result = result;
+
+    // 5 秒后清理
+    setTimeout(() => scanProgressMap.delete(scanId), 5000);
+
+    ok(res, { ...result, scanId });
   } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleScanProgress(req, res) {
+  const scanId = url.parse(req.url, true).query.scanId;
+  const progress = scanProgressMap.get(scanId);
+  if (!progress) return fail(res, 404, '扫描进度不存在');
+  ok(res, { percent: progress.percent, done: progress.done, files: progress.files || 0 });
 }
 
 async function handlePickFolder(req, res) {

@@ -36,6 +36,7 @@ const API = {
   async post(path, body) { return this.request('POST', path, body); },
 
   scan(rootPath, options) { return this.post('/api/scan', { rootPath, options }); },
+  scanProgress(scanId) { return this.get('/api/scan-progress?scanId=' + encodeURIComponent(scanId)); },
   pickFolder() { return this.post('/api/pick-folder', {}); },
   classify(files, config) { return this.post('/api/classify', { files, config }); },
   generatePlan(files, options) { return this.post('/api/plan', { files, options }); },
@@ -337,21 +338,27 @@ async function startScan(folderPath) {
   $('scan-text').textContent = '正在扫描…';
   $('scan-detail').textContent = '已发现 0 个文件';
 
-  // 模拟进度
-  const progressInterval = setInterval(() => {
-    const current = parseFloat($('scan-percent').textContent);
-    if (current < 85) {
-      $('scan-percent').textContent = (current + 3) + '%';
-    }
-  }, 200);
-
   try {
     const scanResult = await API.scan(folderPath, {
       skipHidden: state.settings.skipHidden !== false,
       skipDirs: (state.settings.skipDirs || []),
     });
 
-    clearInterval(progressInterval);
+    const scanId = scanResult.data.scanId;
+
+    // 轮询真实进度
+    if (scanId) {
+      const pollInterval = setInterval(async () => {
+        try {
+          const prog = await API.scanProgress(scanId);
+          $('scan-percent').textContent = prog.data.percent + '%';
+          if (prog.data.done) {
+            clearInterval(pollInterval);
+          }
+        } catch (_) { /* 忽略轮询错误 */ }
+      }, 100);
+    }
+
     $('scan-percent').textContent = '100%';
 
     state.files = scanResult.data.files;
@@ -385,7 +392,6 @@ async function startScan(folderPath) {
       toast('所有文件已在正确位置', 'success');
     }
   } catch (err) {
-    clearInterval(progressInterval);
     toast('扫描失败: ' + err.message, 'error');
     showState('empty');
   }

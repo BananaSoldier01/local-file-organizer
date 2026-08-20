@@ -40,6 +40,7 @@ async function scanDirectory(rootPath, options = {}) {
     skipHidden = true,
     maxDepth = Infinity,
     maxFiles = Infinity,
+    onProgress,
   } = options;
 
   const allSkipDirs = new Set([...DEFAULT_SKIP_DIRS, ...skipDirs]);
@@ -48,9 +49,25 @@ async function scanDirectory(rootPath, options = {}) {
   const errors = [];
   let totalDirs = 0;
   let skippedDirs = 0;
+  let dirsToScan = 0;
+  let dirsScanned = 0;
 
   // 用于去重（符号链接可能导致重复）
   const seenRealPaths = new Set();
+
+  // 首次遍历统计目录数（用于真实进度）
+  async function countDirs(dirPath, depth) {
+    if (depth > maxDepth) return;
+    try {
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !allSkipDirs.has(entry.name) && !(skipHidden && isHidden(entry.name))) {
+          dirsToScan++;
+          await countDirs(path.join(dirPath, entry.name), depth + 1);
+        }
+      }
+    } catch (_) { /* 忽略计数错误 */ }
+  }
 
   async function walk(dirPath, depth) {
     if (depth > maxDepth) return;
@@ -70,6 +87,13 @@ async function scanDirectory(rootPath, options = {}) {
     }
 
     totalDirs++;
+    dirsScanned++;
+
+    // 报告真实进度
+    if (onProgress && dirsToScan > 0) {
+      const pct = Math.min(95, Math.round((dirsScanned / dirsToScan) * 95));
+      onProgress({ percent: pct, scanned: dirsScanned, total: dirsToScan, files: files.length });
+    }
 
     for (const entry of entries) {
       if (files.length >= maxFiles) break;
