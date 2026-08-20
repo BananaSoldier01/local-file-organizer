@@ -174,48 +174,6 @@ function formatDate(timestamp) {
   return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-/**
- * 从浏览器文件选择器接收的文件列表构建扫描结果。
- * 浏览器不暴露绝对路径，服务器无法直接访问这些文件，
- * 因此仅根据文件名和相对路径生成元数据，供分类和方案使用。
- *
- * 注意：实际的文件移动操作需要用户后续手动指定目标路径，
- * 或通过其他方式将文件上传到服务器。
- *
- * @param {Array} fileList — { name, relativePath, size, type }
- * @returns {object} { files: [...], totalBytes, fileCount, errors }
- */
-function scanFileList(fileList) {
-  const files = [];
-  const errors = [];
-  let totalBytes = 0;
-
-  for (const item of fileList) {
-    try {
-      const ext = path.extname(item.name).toLowerCase();
-      const dir = item.relativePath
-        ? path.dirname(item.relativePath)
-        : '';
-
-      files.push({
-        name: item.name,
-        path: item.relativePath || item.name,
-        dir: dir,
-        ext: ext,
-        size: item.size || 0,
-        type: item.type || '',
-        modified: Date.now(),
-        isFile: true,
-      });
-      totalBytes += item.size || 0;
-    } catch (e) {
-      errors.push({ path: item.name, error: e.message });
-    }
-  }
-
-  return { files, totalBytes, fileCount: files.length, errors };
-}
-
 module.exports = {
   scanDirectory,
   formatSize,
