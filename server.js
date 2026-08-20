@@ -130,6 +130,10 @@ async function handleAPI(req, res, parsedUrl) {
     if (result.error) return fail(res, 404, result.error);
     return ok(res, result);
   }
+  // 测试专用：安全检查端点（仅开发模式）
+  if (pathname === '/api/test-security' && req.method === 'POST') {
+    return handleTestSecurity(req, res);
+  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
   }
@@ -199,15 +203,135 @@ const jobMaps = {
   execute: new Map(),
 };
 
-// 受信任的 Plan 存储：planId → { sourceRoot, moves, targetRoot, createdAt }
+// ── 受信任链路存储 ──────────────────────────────────────────
+// scanId → { sourceRoot, createdAt }
+const scanRootStore = new Map();
+// planId → { scanId, sourceRoot, moves, targetRoot, createdAt }
 const planStore = new Map();
 
 function cleanupJob(map, id, delayMs = 30000) {
   setTimeout(() => map.delete(id), delayMs);
 }
 
-function cleanupPlan(id, delayMs = 120000) {
-  setTimeout(() => planStore.delete(id), delayMs);
+function cleanupStore(store, id, delayMs) {
+  setTimeout(() => store.delete(id), delayMs);
+}
+
+// ── 路径安全工具 ────────────────────────────────────────────
+/**
+ * 规范化路径：解析 `..` / `.` / 符号链接（仅对已存在路径）。
+ * 对不存在的路径，只解析已存在的祖先目录。
+ */
+function canonicalizeExistingPath(p) {
+  const resolved = path.resolve(p);
+  // 尝试 realpath，失败则返回 resolve 结果
+  try {
+    return fs.realpathSync(resolved);
+  } catch (_) {
+    return resolved;
+  }
+}
+
+/**
+ * 规范化路径（允许目标不存在）：逐级向上找到已存在祖先，realpath 该祖先，
+ * 再拼接剩余部分。
+ */
+function canonicalizePathAllowMissing(p) {
+  const resolved = path.resolve(p);
+  // 逐级向上找已存在祖先
+  let ancestor = resolved;
+  const parts = [];
+  while (ancestor) {
+    try {
+      if (fs.existsSync(ancestor)) {
+        const realAncestor = fs.realpathSync(ancestor);
+        return path.join(realAncestor, ...parts);
+      }
+    } catch (_) { /* continue */ }
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    parts.unshift(path.basename(ancestor));
+    ancestor = parent;
+  }
+  return resolved;
+}
+
+/**
+ * 判断 canonical 路径是否在 root 内部（含 root 本身）。
+ * 使用 path.relative 防止前缀碰撞。
+ */
+function isPathWithinRoot(canonicalPath, canonicalRoot) {
+  if (canonicalPath === canonicalRoot) return true;
+  const rel = path.relative(canonicalRoot, canonicalPath);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * 检查 move 的 source / target 是否安全。
+ *
+ * Source: 必须在 canonicalRoot 内（使用 realpath + path.relative 防前缀碰撞）。
+ * Target: 必须在 canonicalRoot 内（受控分类子目录）。
+ *   阻止：../ 逃逸、符号链接逃逸、前缀碰撞、source/target 相同/子目录。
+ *
+ * @param {object} move  {from, to}
+ * @param {string} canonicalRoot  规范化后的 scan root
+ * @returns {{safe: boolean, reason?: string}}
+ */
+function checkMoveSafety(move, canonicalRoot) {
+  const { from, to } = move;
+
+  // ── Source 验证 ──
+  let realFrom;
+  try {
+    realFrom = fs.realpathSync(from);
+  } catch (e) {
+    return { safe: false, reason: '源文件不存在: ' + from };
+  }
+  if (!isPathWithinRoot(realFrom, canonicalRoot)) {
+    return { safe: false, reason: '源文件不在扫描根目录内: ' + from };
+  }
+
+  // ── Target 验证 ──
+  // 使用 canonicalizePathAllowMissing 以正确处理 /var/folders 等 symlink
+  const canonicalTo = canonicalizePathAllowMissing(to);
+
+  // 阻止 target 是 source 的子目录或相同
+  if (canonicalTo === realFrom) {
+    return { safe: false, reason: '源文件与目标路径相同' };
+  }
+  if (canonicalTo.startsWith(realFrom + path.sep)) {
+    return { safe: false, reason: '目标路径是源文件的子目录' };
+  }
+
+  // 阻止 target 文件名包含非法字符
+  if (/[<>:"|?*]/.test(path.basename(to))) {
+    return { safe: false, reason: '目标文件名包含非法字符' };
+  }
+
+  // 检查 target 的每个祖先目录是否有 symlink 逃逸
+  // 从 target 的父目录向上遍历到 root
+  let checkDir = path.dirname(canonicalTo);
+  while (checkDir && checkDir !== path.dirname(checkDir)) {
+    // 只检查 root 内的路径
+    if (isPathWithinRoot(canonicalizeExistingPath(checkDir), canonicalRoot)) {
+      try {
+        if (fs.lstatSync(checkDir).isSymbolicLink()) {
+          const linkTarget = fs.realpathSync(checkDir);
+          if (!isPathWithinRoot(linkTarget, canonicalRoot)) {
+            return { safe: false, reason: '检测到符号链接逃逸: ' + checkDir };
+          }
+        }
+      } catch (_) { /* 路径不存在，继续 */ }
+    }
+    checkDir = path.dirname(checkDir);
+  }
+
+  // Target 必须在 canonicalRoot 内（防 ../ 逃逸 + 前缀碰撞）
+  if (!isPathWithinRoot(canonicalTo, canonicalRoot)) {
+    return { safe: false, reason: '目标路径不在扫描根目录内: ' + to };
+  }
+
+  return { safe: true };
 }
 
 /**
@@ -261,6 +385,12 @@ function pollJob(type, id) {
 // ── 扫描 Job ──────────────────────────────────────────────
 function createScanJob(rootPath, options) {
   const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+  // 存储可信 sourceRoot
+  const canonicalRoot = canonicalizeExistingPath(rootPath);
+  scanRootStore.set(scanId, { sourceRoot: canonicalRoot, createdAt: Date.now() });
+  cleanupStore(scanRootStore, scanId, 120000);
+
   const job = {
     scanId,
     status: 'queued',       // queued → preparing → scanning → completed | failed | cancelled
@@ -444,18 +574,29 @@ function createClassifyJob(files, config) {
 
         const batch = batches[bi];
         try {
-          const batchResults = await classifier.classifyBatch(batch, { llm: llmConfig, context, detectProjects });
+          const batchResults = await classifier.classifyBatch(batch, { llm: llmConfig, context, detectProjects: false });
           allResults.push(...batchResults);
           job.completedBatches++;
         } catch (batchErr) {
           console.warn('[classify] batch ' + bi + ' failed:', batchErr.message);
           job.failedBatches++;
-          // 单批失败不影响其他批次，继续
         }
         job.processedFiles = Math.min(files.length, (bi + 1) * BATCH_SIZE);
       }
 
       if (job.status !== 'cancelled') {
+        // Project Group 阶段
+        if (detectProjects && llmConfig && llmConfig.enabled && llmConfig.apiKey) {
+          job.status = 'grouping';
+          try {
+            const groups = await classifier.detectProjectGroups(allResults, llmConfig);
+            job.projectGroups = groups;
+          } catch (groupErr) {
+            console.warn('[classify] project grouping failed:', groupErr.message);
+            job.projectGroups = [];
+          }
+        }
+
         job.status = job.failedBatches > 0 ? 'partial' : 'completed';
       }
       job.results = allResults;
@@ -494,9 +635,25 @@ function handleClassifyProgress(req, res) {
     totalBatches: job.totalBatches,
     completedBatches: job.completedBatches,
     failedBatches: job.failedBatches,
+    hasProjectGroups: !!job.projectGroups,
+    projectGroupCount: job.projectGroups ? job.projectGroups.length : 0,
     error: job.error,
     done: job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled',
   });
+}
+
+function handleClassifyResult(req, res) {
+  const classifyId = url.parse(req.url, true).query.classifyId;
+  const job = jobMaps.classify.get(classifyId);
+  if (!job) return fail(res, 404, '分类任务不存在');
+  if (job.status !== 'completed' && job.status !== 'partial') {
+    return fail(res, 400, '分类未完成，当前状态: ' + job.status);
+  }
+  const result = { results: job.results };
+  if (job.projectGroups) {
+    result.projectGroups = job.projectGroups;
+  }
+  ok(res, result);
 }
 
 function handleClassifyResult(req, res) {
@@ -510,10 +667,12 @@ function handleClassifyResult(req, res) {
 }
 
 function handleClassifyCancel(req, res) {
-  const classifyId = url.parse(req.url, true).query.classifyId;
+  // 统一协议：POST /api/classify-cancel body: { id }
+  const body = req.body || {};
+  const classifyId = body.id || url.parse(req.url, true).query.classifyId;
   const job = jobMaps.classify.get(classifyId);
   if (!job) return fail(res, 404, '分类任务不存在');
-  if (job.status === 'running') {
+  if (job.status === 'running' || job.status === 'grouping') {
     job.cancelRequested = true;
     ok(res, { cancelled: true });
   } else {
@@ -524,21 +683,34 @@ function handleClassifyCancel(req, res) {
 async function handlePlan(req, res) {
   try {
     const body = await readBody(req);
-    const { files, options, sourceRoot } = body;
+    const { files, options, scanId } = body;
     if (!files) return fail(res, 400, '缺少 files');
+
+    // 从 scanId 获取可信 sourceRoot
+    let sourceRoot = null;
+    if (scanId) {
+      const scanRoot = scanRootStore.get(scanId);
+      if (scanRoot) {
+        sourceRoot = scanRoot.sourceRoot;
+      } else {
+        return fail(res, 404, 'scanId 不存在或已过期');
+      }
+    }
+
     const plan = organizer.generatePlan(files, options);
     const validation = organizer.validatePlan(plan);
 
-    // 存储受信任的 plan，供 execute 使用
+    // 存储受信任的 plan
     const planId = 'plan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     planStore.set(planId, {
       planId,
-      sourceRoot: sourceRoot || null,
+      scanId: scanId || null,
+      sourceRoot,
       moves: plan.moves,
       targetRoot: plan.targetRoot,
       createdAt: Date.now(),
     });
-    cleanupPlan(planId);
+    cleanupStore(planStore, planId, 120000);
 
     ok(res, { ...plan, validation, planId });
   } catch (err) { fail(res, 500, err.message); }
@@ -595,10 +767,18 @@ function createExecuteJob(plan, conflictStrategy, sourceRoot) {
           if (result.success) {
             job.success.push(result);
             job.completed++;
+          } else if (result.skipped) {
+            job.skippedCount++;
+            job.skipped.push({ ...move, reason: result.error });
+            job.completed++;
           } else {
             job.failedCount++;
             job.failed.push({ ...move, error: result.error });
             job.completed++;
+          }
+          // 小延迟使取消操作有时间生效
+          if (job.completed < job.total) {
+            await new Promise(r => setTimeout(r, 500));
           }
         } catch (err) {
           job.failedCount++;
@@ -643,38 +823,25 @@ async function handleExecute(req, res) {
     const body = await readBody(req);
     const { planId, conflictStrategy } = body;
 
-    // 优先使用 planId 从服务器受信任存储中获取 plan
-    let plan = null;
-    let sourceRoot = null;
-
-    if (planId) {
-      const stored = planStore.get(planId);
-      if (!stored) return fail(res, 404, 'planId 不存在或已过期');
-      plan = { moves: stored.moves, targetRoot: stored.targetRoot };
-      sourceRoot = stored.sourceRoot;
-    } else if (body.plan) {
-      // 兼容旧版直接提交 plan（已标记为不安全，仅用于测试）
-      plan = body.plan;
-      sourceRoot = body.sourceRoot || null;
-      console.warn('[security] 客户端直接提交 plan 而非 planId');
-    } else {
-      return fail(res, 400, '缺少 planId 或 plan');
+    if (!planId) {
+      return fail(res, 400, '缺少 planId');
     }
 
-    // 执行前服务端路径验证
+    const stored = planStore.get(planId);
+    if (!stored) {
+      return fail(res, 404, 'planId 不存在或已过期');
+    }
+
+    const plan = { moves: stored.moves, targetRoot: stored.targetRoot };
+    const sourceRoot = stored.sourceRoot;
+
+    // 执行前服务端路径安全验证
     if (sourceRoot) {
-      const realRoot = fs.realpathSync(sourceRoot);
+      const canonicalRoot = canonicalizeExistingPath(sourceRoot);
       for (const move of plan.moves) {
-        const realFrom = fs.realpathSync(move.from);
-        if (!realFrom.startsWith(realRoot + path.sep) && realFrom !== realRoot) {
-          return fail(res, 403, '源文件路径越界: ' + move.from);
-        }
-        // target 不需要限制在 sourceRoot 内，但需要检查 target parent 不是 source 的子目录
-        const realToParent = path.dirname(fs.realpathSync(move.to));
-        if (realToParent === realRoot || realToParent.startsWith(realRoot + path.sep)) {
-          // target 在 source 树内 —— 仅当 target 是分类目录时允许
-          // 简单策略：target 必须在 sourceRoot 之外
-          return fail(res, 403, '目标路径不能在源目录树内: ' + move.to);
+        const safety = checkMoveSafety(move, canonicalRoot);
+        if (!safety.safe) {
+          return fail(res, 403, safety.reason);
         }
       }
     }
@@ -706,7 +873,7 @@ function handleExecuteProgress(req, res) {
 async function handleExecuteCancel(req, res) {
   try {
     const body = await readBody(req);
-    const { execId } = body;
+    const execId = body.id || body.execId;
     const job = jobMaps.execute.get(execId);
     if (!job) return fail(res, 404, '执行任务不存在');
     if (job.status === 'running') {
@@ -751,6 +918,24 @@ async function handleSaveSettings(req, res) {
 
     saveSettings(body);
     ok(res, {});
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── 测试专用安全检查 ──────────────────────────────────────
+async function handleTestSecurity(req, res) {
+  try {
+    const body = await readBody(req);
+    const { moves, sourceRoot } = body;
+    if (!moves || !sourceRoot) return fail(res, 400, '缺少 moves 或 sourceRoot');
+
+    const canonicalRoot = canonicalizeExistingPath(sourceRoot);
+    const results = moves.map(move => {
+      const safety = checkMoveSafety(move, canonicalRoot);
+      return { from: move.from, to: move.to, ...safety };
+    });
+
+    const allSafe = results.every(r => r.safe);
+    ok(res, { allSafe, results });
   } catch (err) { fail(res, 500, err.message); }
 }
 

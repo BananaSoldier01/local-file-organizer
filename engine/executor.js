@@ -112,7 +112,7 @@ async function executePlan(plan, options = {}) {
  * @param {object} move  移动操作 {from, to, category}
  * @returns {{safe: boolean, reason?: string}}
  */
-function checkMoveSafety(move) {
+function checkMoveSafety(move, canonicalRoot) {
   const { from, to } = move;
 
   // 检查源文件是否存在
@@ -145,6 +145,16 @@ function checkMoveSafety(move) {
   // 检查目标路径是否包含特殊字符
   if (/[<>:"|?*]/.test(path.basename(to))) {
     return { safe: false, reason: '目标文件名包含非法字符' };
+  }
+
+  // 如果提供了 canonicalRoot，执行服务器端路径验证
+  if (canonicalRoot) {
+    const realFrom = fs.realpathSync(from);
+    const realRoot = fs.realpathSync(canonicalRoot);
+    const rel = path.relative(realRoot, realFrom);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      return { safe: false, reason: '源文件不在扫描根目录内: ' + from };
+    }
   }
 
   return { safe: true };
@@ -181,11 +191,11 @@ async function undoMove(move) {
       } while (fs.existsSync(newTarget));
 
       await fs.promises.rename(source, newTarget);
-      return { success: true, renamedTo: newTarget };
+      return { success: true, renamedTo: newTarget, conflict: true };
     }
 
     await fs.promises.rename(source, target);
-    return { success: true };
+    return { success: true, fullyReverted: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -203,6 +213,7 @@ async function undoMoves(moves, options = {}) {
   const { onProgress } = options;
   let successCount = 0;
   let failedCount = 0;
+  let conflictCount = 0;
   const errors = [];
 
   // 逆序撤销
@@ -215,6 +226,7 @@ async function undoMoves(moves, options = {}) {
     const result = await undoMove(move);
     if (result.success) {
       successCount++;
+      if (result.conflict) conflictCount++;
     } else {
       failedCount++;
       errors.push({ move, error: result.error });
@@ -224,7 +236,26 @@ async function undoMoves(moves, options = {}) {
   // 清理可能残留的空目录
   cleanupEmptyDirs(moves);
 
-  return { success: successCount, failed: failedCount, errors };
+  // 语义化状态
+  let status;
+  if (failedCount === 0 && conflictCount === 0) {
+    status = 'fully_reverted';
+  } else if (failedCount === 0 && conflictCount > 0) {
+    status = 'partially_reverted';
+  } else if (successCount > 0) {
+    status = 'partial';
+  } else {
+    status = 'failed';
+  }
+
+  return {
+    success: successCount,
+    failed: failedCount,
+    conflictCount,
+    errors,
+    status,
+    fullyReverted: status === 'fully_reverted',
+  };
 }
 
 /**

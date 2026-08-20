@@ -275,10 +275,9 @@ function classifyByRules(file, context = {}) {
     confidence = 0.5;
   }
 
-  // 有风险标记的文件降低置信度（用户需要确认）
-  if (riskFlags.includes('sensitive') || riskFlags.includes('no_extension')) {
-    confidence = Math.min(confidence, 0.4);
-  }
+  // 注意：置信度与风险标记解耦。
+  // 风险标记通过 riskFlag 字段独立传递，由 UI 决定是否需要用户确认。
+  // 不再通过降低置信度来触发确认流程。
 
   return {
     fileType,

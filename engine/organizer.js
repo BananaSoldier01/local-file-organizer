@@ -26,7 +26,7 @@ const DANGEROUS_DIRS = new Set([
 function generatePlan(classifiedFiles, options = {}) {
   const {
     targetRoot,
-    flatten = true,
+    flatten = false,
     customTargets = {},
   } = options;
 
@@ -50,22 +50,9 @@ function generatePlan(classifiedFiles, options = {}) {
     rootDir = classifiedFiles[0]?.dir || null;
   }
 
-  // 路径越界检查：目标根目录必须在源文件目录树内
-  if (rootDir && classifiedFiles.length > 0) {
-    const firstFileDir = classifiedFiles[0].dir;
-    const resolvedRoot = path.resolve(rootDir);
-    const resolvedFileDir = path.resolve(firstFileDir);
-    if (!resolvedRoot.startsWith(resolvedFileDir) && !resolvedFileDir.startsWith(resolvedRoot)) {
-      // 目标根目录不在源目录树中，拒绝生成方案
-      return {
-        moves: [],
-        conflicts: [],
-        summary: {},
-        targetRoot: rootDir,
-        error: '目标目录不在源文件夹范围内，拒绝执行越界操作',
-      };
-    }
-  }
+  // 注意：不再在此处拒绝目标目录不在源目录树中的情况。
+  // 安全性由服务器端 checkMoveSafety 在执行时验证。
+  // 目标可以是在 scan root 内的受控分类子目录，也可以是用户指定的外部目录。
 
   for (const file of classifiedFiles) {
     const targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';

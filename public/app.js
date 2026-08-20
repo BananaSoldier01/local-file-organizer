@@ -43,10 +43,11 @@ const API = {
   classifyProgress(classifyId) { return this.get('/api/classify-progress?classifyId=' + encodeURIComponent(classifyId)); },
   classifyResult(classifyId) { return this.get('/api/classify-result?classifyId=' + encodeURIComponent(classifyId)); },
   classifyCancel(classifyId) { return this.post('/api/classify-cancel', { classifyId }); },
-  generatePlan(files, options) { return this.post('/api/plan', { files, options }); },
+  generatePlan(files, options) { return this.post('/api/plan', { files, options: { targetRoot: options?.targetRoot }, scanId: options?.scanId }); },
   executePlan(opts) { return this.post('/api/execute', { planId: opts?.planId, conflictStrategy: opts?.conflictStrategy }); },
   executeProgress(execId) { return this.get('/api/execute-progress?execId=' + encodeURIComponent(execId)); },
-  executeCancel(execId) { return this.post('/api/execute-cancel', { execId }); },
+  executeCancel(execId) { return this.post('/api/execute-cancel', { id: execId }); },
+  classifyCancel(classifyId) { return this.post('/api/classify-cancel', { id: classifyId }); },
   undo(sessionId) { return this.post('/api/undo', { sessionId }); },
   job(type, id) { return this.get('/api/job?type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id)); },
   getHistory(limit) { return this.get('/api/history?limit=' + (limit || 50)); },
@@ -425,12 +426,13 @@ async function startScan(folderPath) {
     }
 
     const classifiedData = (await API.classifyResult(classifyId)).data;
-    state.classifiedFiles = classifiedData;
+    state.classifiedFiles = classifiedData.results || classifiedData;
+    state.projectGroups = classifiedData.projectGroups || [];
 
-    // 5. 生成方案
+    // 5. 生成方案（携带 scanId 获取可信 sourceRoot）
     const planResult = await API.generatePlan(state.classifiedFiles, {
       targetRoot: state.customTargetRoot,
-      sourceRoot: state.currentFolder,
+      scanId: scanId,
     });
     state.plan = planResult.data;
     state.planId = planResult.data.planId;
@@ -780,7 +782,10 @@ async function executePlan() {
     const execId = createResult.data.execId;
     if (!execId) throw new Error('未获取到 execId');
 
-    // 2. 统一轮询 —— 单个 loop，无硬超时
+    // 2. 记录当前 execId，使 Cancel 可用
+    currentExecId = execId;
+
+    // 3. 统一轮询 —— 单个 loop，无硬超时
     while (true) {
       const prog = await API.job('execute', execId);
       const d = prog.data;
@@ -802,12 +807,14 @@ async function executePlan() {
           (d.failed > 0 ? `，${d.failed} 个失败` : '') +
           (d.skipped > 0 ? `，${d.skipped} 个跳过` : '') +
           (d.status === 'cancelled_partial' ? `（已取消，完成 ${d.completed}/${d.total}）` : '');
+        currentExecId = null;
         break;
       }
 
       await new Promise(r => setTimeout(r, 200));
     }
   } catch (err) {
+    currentExecId = null;
     toast('执行失败: ' + err.message, 'error');
     showState('workspace');
   }
