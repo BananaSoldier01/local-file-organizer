@@ -41,7 +41,9 @@ const API = {
   pickFolder() { return this.post('/api/pick-folder', {}); },
   classify(files, config) { return this.post('/api/classify', { files, config }); },
   generatePlan(files, options) { return this.post('/api/plan', { files, options }); },
-  executePlan(plan, conflictStrategy) { return this.post('/api/execute', { plan, conflictStrategy }); },
+  executePlan(plan, opts) { return this.post('/api/execute', { plan, conflictStrategy: opts?.conflictStrategy, sourceRoot: opts?.sourceRoot }); },
+  executeProgress(execId) { return this.get('/api/execute-progress?execId=' + encodeURIComponent(execId)); },
+  executeCancel(execId) { return this.post('/api/execute-cancel', { execId }); },
   undo(sessionId) { return this.post('/api/undo', { sessionId }); },
   getHistory(limit) { return this.get('/api/history?limit=' + (limit || 50)); },
   getHistoryStats() { return this.get('/api/history/stats'); },
@@ -759,39 +761,82 @@ async function executePlan() {
   $('execute-text').textContent = '正在整理文件…';
   $('execute-detail').textContent = '0 / ' + moves.length;
 
-  const plan = { ...state.plan, moves };
-  const total = moves.length;
-  let done = 0;
+  const plan = { ...state.plan, moves, targetRoot: state.customTargetRoot || state.currentFolder };
 
   try {
-    const result = await API.executePlan(plan, {
+    // 1. 创建异步执行 Job
+    const createResult = await API.executePlan(plan, {
       conflictStrategy: state.settings.conflictStrategy || { overwrite: 'skip' },
+      sourceRoot: state.currentFolder,
     });
 
-    for (let i = 0; i < total; i++) {
-      await new Promise(r => setTimeout(r, 30));
-      done = i + 1;
-      $('execute-progress-fill').style.width = (done / total * 100) + '%';
-      $('execute-detail').textContent = done + ' / ' + total + ' · ' + path.basename(moves[i]?.from || '');
+    const execId = createResult.data.execId;
+    if (!execId) throw new Error('未获取到 execId');
+
+    // 2. 轮询真实进度
+    const pollInterval = setInterval(async () => {
+      try {
+        const prog = await API.executeProgress(execId);
+        const d = prog.data;
+        const pct = d.total > 0 ? Math.round((d.completed / d.total) * 100) : 0;
+        $('execute-progress-fill').style.width = pct + '%';
+        $('execute-text').textContent = statusLabel(d.status);
+        $('execute-detail').textContent =
+          `${d.completed || 0} / ${d.total} · ` +
+          (d.currentFile ? path.basename(d.currentFile) : '') +
+          (d.failed > 0 ? ` · ${d.failed} 失败` : '');
+      } catch (_) { /* 忽略轮询错误 */ }
+    }, 200);
+
+    // 3. 等待完成
+    let retries = 0;
+    while (retries < 300) {
+      const prog = await API.executeProgress(execId);
+      const d = prog.data;
+      if (d.done) {
+        clearInterval(pollInterval);
+        $('execute-progress-fill').style.width = '100%';
+
+        $('done-title').textContent = d.status === 'cancelled_partial' ? '已取消（部分完成）' : '整理完成';
+        $('done-detail').textContent =
+          `已移动 ${d.successCount || 0} 个文件` +
+          (d.failed > 0 ? `，${d.failed} 个失败` : '') +
+          (d.skipped > 0 ? `，${d.skipped} 个跳过` : '') +
+          (d.status === 'cancelled_partial' ? `（已取消，完成 ${d.completed}/${d.total}）` : '');
+
+        if (d.failed > 0) {
+          toast(`${d.failed} 个文件移动失败`, 'error');
+        } else if (d.status === 'cancelled_partial') {
+          toast('已取消整理', 'warning');
+        } else {
+          toast('整理完成', 'success');
+        }
+
+        state._lastSessionId = d.sessionId;
+        showState('done');
+        return;
+      }
+      await new Promise(r => setTimeout(r, 300));
+      retries++;
     }
-
-    $('done-title').textContent = '整理完成';
-    $('done-detail').textContent =
-      `已移动 ${result.success.length} 个文件` +
-      (result.failed.length > 0 ? `，${result.failed.length} 个失败` : '') +
-      (result.skipped.length > 0 ? `，${result.skipped.length} 个跳过` : '');
-
-    if (result.failed.length > 0) {
-      toast(`${result.failed.length} 个文件移动失败`, 'error');
-    } else {
-      toast('整理完成', 'success');
-    }
-
-    showState('done');
+    clearInterval(pollInterval);
+    throw new Error('执行超时');
   } catch (err) {
     toast('执行失败: ' + err.message, 'error');
     showState('workspace');
   }
+}
+
+function statusLabel(status) {
+  const labels = {
+    queued: '等待执行…',
+    running: '正在整理文件…',
+    completed: '整理完成',
+    partial: '部分完成',
+    failed: '执行失败',
+    cancelled_partial: '已取消',
+  };
+  return labels[status] || status;
 }
 
 // ── 撤销 ──────────────────────────────────────────────────
@@ -812,15 +857,22 @@ function newScan() {
   state.files = [];
   state.classifiedFiles = [];
   state.plan = null;
+  state.selectedFiles.clear();
   state.excludedFiles.clear();
   state.customTargetRoot = null;
+  state.projectGroups = [];
   $('folder-path-input').value = '';
   $('custom-target-input').value = '';
   $('search-input').value = '';
-  state.filters = { fileType: null, risk: null, search: '' };
+  state.filters = {
+    fileType: null,
+    risk: null,
+    search: '',
+    showExcluded: false,
+    reviewOnly: false,
+  };
   // 重置筛选 chip
   document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
-  document.querySelector('.filter-chip[data-value=""]')?.classList.add('active');
   showState('empty');
 }
 
@@ -887,18 +939,31 @@ function loadSettingsUI() {
   const s = state.settings || {};
   $('setting-llm-enabled').checked = !!(s.llm && s.llm.enabled);
   $('setting-llm-endpoint').value = (s.llm && s.llm.endpoint) || '';
-  $('setting-llm-apikey').value = (s.llm && s.llm.apiKey) || '';
+  // API Key 不回显到输入框，只显示 placeholder
+  const apiKeyInput = $('setting-llm-apikey');
+  const configured = s.llm && s.llm.apiKeyConfigured;
+  const preview = s.llm && s.llm.apiKeyPreview;
+  apiKeyInput.value = '';  // 永远清空，不回显真实 key
+  if (configured && preview) {
+    apiKeyInput.placeholder = '已配置：' + preview + '（留空则不修改）';
+  } else {
+    apiKeyInput.placeholder = 'sk-...（留空则不修改）';
+  }
+  apiKeyInput.type = 'password';
   $('setting-llm-model').value = (s.llm && s.llm.model) || '';
   $('setting-skip-hidden').checked = s.skipHidden !== false;
   $('setting-conflict').value = (s.conflictStrategy && s.conflictStrategy.overwrite) || 'skip';
 }
 
 async function saveSettings() {
+  const apiKeyInput = $('setting-llm-apikey');
+  const newApiKey = apiKeyInput.value.trim();
+
   const newSettings = {
     llm: {
       enabled: $('setting-llm-enabled').checked,
       endpoint: $('setting-llm-endpoint').value.trim(),
-      apiKey: $('setting-llm-apikey').value.trim(),
+      apiKey: newApiKey,  // 留空则服务器保留原 key
       model: $('setting-llm-model').value.trim() || 'deepseek-chat',
     },
     skipHidden: $('setting-skip-hidden').checked,
@@ -907,7 +972,9 @@ async function saveSettings() {
   };
   try {
     await API.saveSettings(newSettings);
-    state.settings = newSettings;
+    // 重新加载设置以获取最新的 masked 状态
+    state.settings = (await API.getSettings()).data;
+    loadSettingsUI();
     toast('设置已保存', 'success');
     closeSettings();
   } catch (err) {

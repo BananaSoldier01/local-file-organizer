@@ -25,14 +25,19 @@ const CONFIG_DIR = path.join(os.homedir(), '.file-organizer');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'settings.json');
 
 function maskSettings(settings) {
-  // 深拷贝并遮盖 API Key
+  // 深拷贝，API Key 替换为配置状态标记
   const masked = JSON.parse(JSON.stringify(settings));
-  if (masked.llm && masked.llm.apiKey) {
-    const key = masked.llm.apiKey;
-    if (key.length > 8) {
-      masked.llm.apiKey = key.slice(0, 4) + '••••••••••' + key.slice(-4);
+  if (masked.llm) {
+    if (masked.llm.apiKey) {
+      const key = masked.llm.apiKey;
+      masked.llm.apiKeyConfigured = true;
+      masked.llm.apiKeyPreview = key.length > 8
+        ? key.slice(0, 4) + '••••••••••' + key.slice(-4)
+        : '••••';
+      delete masked.llm.apiKey;
     } else {
-      masked.llm.apiKey = '••••';
+      masked.llm.apiKeyConfigured = false;
+      masked.llm.apiKeyPreview = '';
     }
   }
   return masked;
@@ -103,6 +108,12 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/scan-result' && req.method === 'GET') {
     return handleScanResult(req, res);
   }
+  if (pathname === '/api/execute-progress' && req.method === 'GET') {
+    return handleExecuteProgress(req, res);
+  }
+  if (pathname === '/api/execute-cancel' && req.method === 'POST') {
+    return handleExecuteCancel(req, res);
+  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
   }
@@ -156,14 +167,23 @@ function readBody(req) {
   });
 }
 
-// ── 异步扫描 Job ──────────────────────────────────────────
-const scanJobMap = new Map();
+// ── 异步 Job 基础设施 ──────────────────────────────────────
+const jobMaps = {
+  scan: new Map(),
+  classify: new Map(),
+  execute: new Map(),
+};
 
+function cleanupJob(map, id, delayMs = 30000) {
+  setTimeout(() => map.delete(id), delayMs);
+}
+
+// ── 扫描 Job ──────────────────────────────────────────────
 function createScanJob(rootPath, options) {
   const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   const job = {
     scanId,
-    status: 'preparing',       // preparing → scanning → analyzing → completed | failed | cancelled
+    status: 'queued',       // queued → preparing → scanning → completed | failed | cancelled
     percent: 0,
     files: 0,
     dirs: 0,
@@ -174,34 +194,25 @@ function createScanJob(rootPath, options) {
     createdAt: Date.now(),
   };
 
-  scanJobMap.set(scanId, job);
+  jobMaps.scan.set(scanId, job);
 
   // 后台执行扫描
   (async () => {
     try {
-      job.status = 'scanning';
+      job.status = 'preparing';
 
       const onProgress = (p) => {
         job.files = p.files || 0;
         job.dirs = p.dirs || 0;
         job.scannedDirs = p.scanned || 0;
         job.totalDirs = p.total || 0;
-        if (p.percent !== undefined) job.percent = p.percent;
-        // 根据文件数估算进度（目录数可能为0时的回退方案）
         if (job.totalDirs > 0) {
-          job.percent = Math.min(90, Math.round((job.scannedDirs / job.totalDirs) * 90));
-        } else if (job.files > 0) {
-          job.percent = Math.min(85, Math.min(85, job.files));
+          job.percent = Math.min(95, Math.round((job.scannedDirs / job.totalDirs) * 95));
         }
       };
 
+      job.status = 'scanning';
       const result = await scanner.scanDirectory(rootPath, { ...options, onProgress });
-
-      job.status = 'analyzing';
-      job.percent = 92;
-
-      // 简单分析阶段标记
-      await new Promise(r => setTimeout(r, 50));
 
       job.status = 'completed';
       job.percent = 100;
@@ -209,12 +220,11 @@ function createScanJob(rootPath, options) {
       job.files = result.files.length;
       job.dirs = result.stats?.totalDirs || 0;
 
-      // 30 秒后清理
-      setTimeout(() => scanJobMap.delete(scanId), 30000);
+      cleanupJob(jobMaps.scan, scanId);
     } catch (err) {
       job.status = 'failed';
       job.error = err.message;
-      setTimeout(() => scanJobMap.delete(scanId), 30000);
+      cleanupJob(jobMaps.scan, scanId);
     }
   })();
 
@@ -250,7 +260,7 @@ async function handleScan(req, res) {
 
 function handleScanProgress(req, res) {
   const scanId = url.parse(req.url, true).query.scanId;
-  const job = scanJobMap.get(scanId);
+  const job = jobMaps.scan.get(scanId);
   if (!job) return fail(res, 404, '扫描任务不存在');
   ok(res, {
     scanId: job.scanId,
@@ -267,7 +277,7 @@ function handleScanProgress(req, res) {
 
 function handleScanResult(req, res) {
   const scanId = url.parse(req.url, true).query.scanId;
-  const job = scanJobMap.get(scanId);
+  const job = jobMaps.scan.get(scanId);
   if (!job) return fail(res, 404, '扫描任务不存在');
   if (job.status !== 'completed') {
     return fail(res, 400, '扫描未完成，当前状态: ' + job.status);
@@ -333,27 +343,143 @@ async function handlePlan(req, res) {
   } catch (err) { fail(res, 500, err.message); }
 }
 
+// ── 执行 Job ──────────────────────────────────────────────
+function createExecuteJob(plan, conflictStrategy, sourceRoot) {
+  const execId = 'exec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const job = {
+    execId,
+    status: 'queued',       // queued → running → completed | partial | failed | cancelled
+    total: plan.moves.length,
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+    currentFile: null,
+    success: [],
+    failed: [],
+    skipped: [],
+    sessionId: null,
+    error: null,
+    cancelRequested: false,
+    createdAt: Date.now(),
+  };
+
+  jobMaps.execute.set(execId, job);
+
+  (async () => {
+    try {
+      job.status = 'running';
+      const strategy = conflictStrategy || { overwrite: 'skip' };
+
+      // 逐个执行移动，每完成一个更新进度
+      for (let i = 0; i < plan.moves.length; i++) {
+        if (job.cancelRequested) {
+          job.status = 'cancelled_partial';
+          break;
+        }
+
+        const move = plan.moves[i];
+        job.currentFile = move.from;
+
+        try {
+          // 执行前安全检查
+          const safety = executor.checkMoveSafety(move, sourceRoot);
+          if (!safety.safe) {
+            job.skipped++;
+            job.skipped.push({ ...move, reason: safety.reason });
+            job.completed++;
+            continue;
+          }
+
+          const result = await executor.executeSingleMove(move, strategy);
+          if (result.success) {
+            job.success.push(result);
+            job.completed++;
+          } else {
+            job.failed++;
+            job.failed.push({ ...move, error: result.error });
+            job.completed++;
+          }
+        } catch (err) {
+          job.failed++;
+          job.failed.push({ ...move, error: err.message });
+          job.completed++;
+        }
+
+        // 更新进度
+        job.total = plan.moves.length;
+      }
+
+      if (job.status !== 'cancelled_partial') {
+        job.status = job.failed.length > 0 ? 'partial' : 'completed';
+      }
+
+      // 记录历史
+      if (job.success.length > 0) {
+        job.sessionId = history.recordSession({
+          sourceDir: sourceRoot,
+          targetRoot: plan.targetRoot,
+          moves: plan.moves,
+          summary: { total: plan.moves.length },
+          success: job.success,
+          failed: job.failed,
+          skipped: job.skipped,
+        });
+      }
+
+      cleanupJob(jobMaps.execute, execId, 60000);
+    } catch (err) {
+      job.status = 'failed';
+      job.error = err.message;
+      cleanupJob(jobMaps.execute, execId);
+    }
+  })();
+
+  return execId;
+}
+
 async function handleExecute(req, res) {
   try {
     const body = await readBody(req);
-    const { plan, conflictStrategy } = body;
+    const { plan, conflictStrategy, sourceRoot } = body;
     if (!plan) return fail(res, 400, '缺少 plan');
-    const settings = loadSettings();
-    const strategy = conflictStrategy || settings.conflictStrategy || { overwrite: 'skip' };
-    const result = await executor.executePlan(plan, { conflictStrategy: strategy });
-    let sessionId = null;
-    if (result.success.length > 0) {
-      sessionId = history.recordSession({
-        sourceDir: plan.sourceRoot || plan.moves[0]?.from,
-        targetRoot: plan.targetRoot,
-        moves: result.success,
-        summary: plan.summary,
-        success: result.success,
-        failed: result.failed,
-        skipped: result.skipped,
-      });
+
+    // 立即创建异步 Job，返回 execId
+    const execId = createExecuteJob(plan, conflictStrategy, sourceRoot);
+    ok(res, { execId, status: 'queued', total: plan.moves.length });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleExecuteProgress(req, res) {
+  const execId = url.parse(req.url, true).query.execId;
+  const job = jobMaps.execute.get(execId);
+  if (!job) return fail(res, 404, '执行任务不存在');
+  ok(res, {
+    execId: job.execId,
+    status: job.status,
+    total: job.total,
+    completed: job.completed,
+    failed: job.failed,
+    skipped: job.skipped,
+    currentFile: job.currentFile,
+    successCount: job.success.length,
+    sessionId: job.sessionId,
+    error: job.error,
+    done: job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled_partial',
+  });
+}
+
+async function handleExecuteCancel(req, res) {
+  try {
+    const body = await readBody(req);
+    const { execId } = body;
+    const job = jobMaps.execute.get(execId);
+    if (!job) return fail(res, 404, '执行任务不存在');
+    if (job.status === 'running') {
+      job.cancelRequested = true;
+      ok(res, { cancelled: true, completed: job.completed, total: job.total });
+    } else {
+      fail(res, 400, '任务当前状态不可取消: ' + job.status);
     }
-    ok(res, { ...result, sessionId });
   } catch (err) { fail(res, 500, err.message); }
 }
 
@@ -377,6 +503,17 @@ async function handleGetHistory(req, res, parsedUrl) {
 async function handleSaveSettings(req, res) {
   try {
     const body = await readBody(req);
+    const current = loadSettings();
+
+    // 如果客户端没有提供新的 apiKey，保留原有 key
+    if (body.llm && body.llm.apiKey) {
+      // 用户提供了新 key，使用新值
+    } else if (current.llm && current.llm.apiKey) {
+      // 保留原有 key
+      if (!body.llm) body.llm = {};
+      body.llm.apiKey = current.llm.apiKey;
+    }
+
     saveSettings(body);
     ok(res, {});
   } catch (err) { fail(res, 500, err.message); }

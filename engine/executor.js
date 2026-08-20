@@ -18,6 +18,61 @@ const path = require('path');
  * @param {object} [options.conflictStrategy]  冲突策略 {overwrite: 'skip'|'rename'|'overwrite'}
  * @returns {Promise<{success: Array, failed: Array, skipped: Array}>}
  */
+/**
+ * 执行单个移动操作。
+ *
+ * @param {object} move  移动操作 {from, to, category}
+ * @param {object} conflictStrategy  冲突策略
+ * @returns {Promise<{success: boolean, result?: object, error?: string, skipped?: boolean, reason?: string}>}
+ */
+async function executeSingleMove(move, conflictStrategy = { overwrite: 'skip' }) {
+  try {
+    // 安全检查
+    const safety = checkMoveSafety(move);
+    if (!safety.safe) {
+      return { success: false, error: safety.reason };
+    }
+
+    // 确保目标目录存在
+    const targetDir = path.dirname(move.to);
+    await fs.promises.mkdir(targetDir, { recursive: true });
+
+    // 检查目标文件是否已存在
+    let finalTarget = move.to;
+    if (fs.existsSync(finalTarget)) {
+      const strategy = conflictStrategy.overwrite || 'skip';
+      if (strategy === 'skip') {
+        return { success: false, skipped: true, reason: '目标文件已存在，已跳过' };
+      } else if (strategy === 'rename') {
+        const ext = path.extname(move.to);
+        const base = path.basename(move.to, ext);
+        let counter = 2;
+        do {
+          finalTarget = path.join(targetDir, `${base}_${counter}${ext}`);
+          counter++;
+        } while (fs.existsSync(finalTarget));
+      }
+      // overwrite: 直接覆盖
+    }
+
+    // 执行移动（跨驱动器时使用 copy+delete）
+    try {
+      await fs.promises.rename(move.from, finalTarget);
+    } catch (renameErr) {
+      if (renameErr.code === 'EXDEV' || renameErr.code === 'EEXDEV') {
+        await fs.promises.copyFile(move.from, finalTarget);
+        await fs.promises.unlink(move.from);
+      } else {
+        throw renameErr;
+      }
+    }
+
+    return { success: true, result: { ...move, actualTarget: finalTarget } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 async function executePlan(plan, options = {}) {
   const {
     onProgress,
@@ -37,58 +92,14 @@ async function executePlan(plan, options = {}) {
       onProgress(i + 1, total, path.basename(move.from));
     }
 
-    try {
-      // 安全检查
-      const safety = checkMoveSafety(move);
-      if (!safety.safe) {
-        failed.push({ move, error: safety.reason });
-        if (onError) onError({ move, error: safety.reason }, move);
-        continue;
-      }
-
-      // 确保目标目录存在
-      const targetDir = path.dirname(move.to);
-      await fs.promises.mkdir(targetDir, { recursive: true });
-
-      // 检查目标文件是否已存在
-      let finalTarget = move.to;
-      if (fs.existsSync(finalTarget)) {
-        const strategy = conflictStrategy.overwrite || 'skip';
-        if (strategy === 'skip') {
-          skipped.push({ move, reason: '目标文件已存在，已跳过' });
-          continue;
-        } else if (strategy === 'rename') {
-          const ext = path.extname(move.to);
-          const base = path.basename(move.to, ext);
-          let counter = 2;
-          do {
-            finalTarget = path.join(targetDir, `${base}_${counter}${ext}`);
-            counter++;
-          } while (fs.existsSync(finalTarget));
-        }
-        // overwrite: 直接覆盖
-      }
-
-      // 执行移动（跨驱动器时使用 copy+delete）
-      try {
-        await fs.promises.rename(move.from, finalTarget);
-      } catch (renameErr) {
-        if (renameErr.code === 'EXDEV' || renameErr.code === 'EEXDEV') {
-          // 跨驱动器：复制后删除
-          await fs.promises.copyFile(move.from, finalTarget);
-          await fs.promises.unlink(move.from);
-        } else {
-          throw renameErr;
-        }
-      }
-
-      success.push({
-        ...move,
-        actualTarget: finalTarget,
-      });
-    } catch (err) {
-      failed.push({ move, error: err.message });
-      if (onError) onError({ move, error: err.message }, move);
+    const result = await executeSingleMove(move, conflictStrategy);
+    if (result.success) {
+      success.push(result.result);
+    } else if (result.skipped) {
+      skipped.push({ move, reason: result.reason });
+    } else {
+      failed.push({ move, error: result.error });
+      if (onError) onError({ move, error: result.error }, move);
     }
   }
 
@@ -244,6 +255,7 @@ function cleanupEmptyDirs(moves) {
 
 module.exports = {
   executePlan,
+  executeSingleMove,
   checkMoveSafety,
   undoMove,
   undoMoves,
