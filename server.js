@@ -116,18 +116,6 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/settings' && req.method === 'POST') {
     return await handleSaveSettings(req, res);
   }
-  if (pathname === '/api/exists' && req.method === 'POST') {
-    return await handleExists(req, res);
-  }
-  if (pathname === '/api/formatSize' && req.method === 'GET') {
-    const bytes = parseInt(parsedUrl.query.bytes, 10);
-    return ok(res, scanner.formatSize(bytes));
-  }
-  if (pathname === '/api/formatDate' && req.method === 'GET') {
-    const ts = parseInt(parsedUrl.query.timestamp, 10);
-    return ok(res, scanner.formatDate(ts));
-  }
-
   fail(res, 404, 'Not found');
 }
 
@@ -273,16 +261,6 @@ async function handleSaveSettings(req, res) {
     const body = await readBody(req);
     saveSettings(body);
     ok(res, {});
-  } catch (err) { fail(res, 500, err.message); }
-}
-
-async function handleExists(req, res) {
-  try {
-    const body = await readBody(req);
-    const { paths: pathList } = body;
-    const result = {};
-    for (const p of pathList) { result[p] = fs.existsSync(p); }
-    ok(res, result);
   } catch (err) { fail(res, 500, err.message); }
 }
 

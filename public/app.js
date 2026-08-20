@@ -47,7 +47,6 @@ const API = {
   getFileTypes() { return this.get('/api/file-types'); },
   getSettings() { return this.get('/api/settings'); },
   saveSettings(s) { return this.post('/api/settings', s); },
-  checkExists(paths) { return this.post('/api/exists', { paths }); },
 };
 
 // ── 路径工具 ──────────────────────────────────────────────
