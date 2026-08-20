@@ -1,6 +1,6 @@
 {
   "name": "file-organizer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
