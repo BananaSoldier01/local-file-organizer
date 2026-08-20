@@ -218,7 +218,6 @@ function scanFileList(fileList) {
 
 module.exports = {
   scanDirectory,
-  scanFileList,
   formatSize,
   formatDate,
 };

@@ -3,6 +3,8 @@
  *
  * 记录所有文件操作，支持撤销。
  * 持久化到用户数据目录。
+ *
+ * 隐私：历史记录仅存储路径片段和文件名，不存储完整路径。
  */
 
 const fs = require('fs');
@@ -13,6 +15,17 @@ const os = require('os');
 const HISTORY_DIR = path.join(os.homedir(), '.file-organizer');
 const HISTORY_FILE = path.join(HISTORY_DIR, 'history.json');
 const MAX_HISTORY_ENTRIES = 1000;
+
+/**
+ * 截断路径用于历史记录（保护隐私）
+ */
+function truncatePathForHistory(p) {
+  if (!p) return '';
+  // 只保留最后一级目录和文件名
+  const parts = p.split(path.sep).filter(Boolean);
+  if (parts.length <= 2) return p;
+  return '…' + path.sep + parts.slice(-2).join(path.sep);
+}
 
 let historyCache = null;
 
@@ -89,11 +102,11 @@ function recordSession(session) {
   const entry = {
     id: generateId(),
     timestamp: Date.now(),
-    sourceDir: session.sourceDir,
-    targetRoot: session.targetRoot || null,
+    sourceDir: truncatePathForHistory(session.sourceDir),
+    targetRoot: truncatePathForHistory(session.targetRoot || ''),
     moves: session.moves.map(m => ({
-      from: m.from,
-      to: m.actualTarget || m.to,
+      from: truncatePathForHistory(m.from),
+      to: truncatePathForHistory(m.actualTarget || m.to),
       category: m.category,
       conflictResolution: m.conflictResolution,
     })),

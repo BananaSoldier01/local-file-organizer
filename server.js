@@ -10,7 +10,6 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const os = require('os');
-const zlib = require('zlib');
 
 // ── 引擎模块 ──────────────────────────────────────────────
 const scanner = require('./engine/scanner');
@@ -22,7 +21,7 @@ const history = require('./engine/history');
 // ── 配置 ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 38211;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const CONFIG_DIR = path.join(__dirname, 'data');
+const CONFIG_DIR = path.join(os.homedir(), '.file-organizer');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'settings.json');
 
 function loadSettings() {
