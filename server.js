@@ -24,6 +24,20 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const CONFIG_DIR = path.join(os.homedir(), '.file-organizer');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'settings.json');
 
+function maskSettings(settings) {
+  // 深拷贝并遮盖 API Key
+  const masked = JSON.parse(JSON.stringify(settings));
+  if (masked.llm && masked.llm.apiKey) {
+    const key = masked.llm.apiKey;
+    if (key.length > 8) {
+      masked.llm.apiKey = key.slice(0, 4) + '••••••••••' + key.slice(-4);
+    } else {
+      masked.llm.apiKey = '••••';
+    }
+  }
+  return masked;
+}
+
 function loadSettings() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
@@ -121,7 +135,7 @@ async function handleAPI(req, res, parsedUrl) {
     return ok(res, classifier.getFileTypes());
   }
   if (pathname === '/api/settings' && req.method === 'GET') {
-    return ok(res, loadSettings());
+    return ok(res, maskSettings(loadSettings()));
   }
   if (pathname === '/api/settings' && req.method === 'POST') {
     return await handleSaveSettings(req, res);
@@ -395,7 +409,12 @@ function serveStatic(req, res, pathname) {
 
 // ── 主服务器 ──────────────────────────────────────────────
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS: 仅允许本地来源
+  const origin = req.headers.origin || '';
+  const allowedOrigins = ['http://localhost:' + PORT, 'http://127.0.0.1:' + PORT, 'null'];
+  if (allowedOrigins.includes(origin) || origin === '') {
+    res.setHeader('Access-Control-Allow-Origin', origin || ('http://localhost:' + PORT));
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
@@ -407,10 +426,11 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log('');
   console.log('  本地文件智能整理器 已启动');
   console.log('  访问地址: http://localhost:' + PORT);
+  console.log('  绑定: 127.0.0.1 仅本地访问');
   console.log('  按 Ctrl+C 停止');
   console.log('');
 });
