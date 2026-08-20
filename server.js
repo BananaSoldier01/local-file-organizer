@@ -79,14 +79,8 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/scan' && req.method === 'POST') {
     return await handleScan(req, res);
   }
-  if (pathname === '/api/scan-files' && req.method === 'POST') {
-    return await handleScanFiles(req, res);
-  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
-  }
-  if (pathname === '/api/upload' && req.method === 'POST') {
-    return await handleUpload(req, res);
   }
   if (pathname === '/api/classify' && req.method === 'POST') {
     return await handleClassify(req, res);
@@ -112,6 +106,9 @@ async function handleAPI(req, res, parsedUrl) {
   }
   if (pathname === '/api/categories' && req.method === 'GET') {
     return ok(res, classifier.getCategories());
+  }
+  if (pathname === '/api/file-types' && req.method === 'GET') {
+    return ok(res, classifier.getFileTypes());
   }
   if (pathname === '/api/settings' && req.method === 'GET') {
     return ok(res, loadSettings());
@@ -173,30 +170,6 @@ async function handleScan(req, res) {
   } catch (err) { fail(res, 500, err.message); }
 }
 
-async function handleScanFiles(req, res) {
-  try {
-    const body = await readBody(req);
-    const { fileList } = body;
-    if (!fileList || !Array.isArray(fileList) || fileList.length === 0) {
-      return fail(res, 400, '缺少文件列表');
-    }
-    if (fileList.length > 5000) {
-      return fail(res, 400, '文件数量过多（最多 5000 个）');
-    }
-
-    // 提取源标签（从第一个文件的相对路径推断文件夹名）
-    let sourceLabel = '浏览器选择的文件夹';
-    if (fileList.length > 0 && fileList[0].relativePath) {
-      const parts = fileList[0].relativePath.split('/');
-      if (parts.length > 1) sourceLabel = parts[0];
-    }
-
-    const result = scanner.scanFileList(fileList);
-    result.sourceLabel = sourceLabel;
-    ok(res, result);
-  } catch (err) { fail(res, 500, err.message); }
-}
-
 async function handlePickFolder(req, res) {
   try {
     const { execFile } = require('child_process');
@@ -217,6 +190,19 @@ async function handlePickFolder(req, res) {
   } catch (err) { fail(res, 500, err.message); }
 }
 
+// ── 请求处理 ──────────────────────────────────────────────
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => data += chunk);
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); }
+      catch (e) { resolve({ raw: data }); }
+    });
+    req.on('error', reject);
+  });
+}
+
 async function handleClassify(req, res) {
   try {
     const body = await readBody(req);
@@ -224,7 +210,8 @@ async function handleClassify(req, res) {
     if (!files) return fail(res, 400, '缺少 files');
     const settings = loadSettings();
     const llmConfig = (config && config.llm) || settings.llm;
-    const results = await classifier.classifyFiles(files, { llm: llmConfig });
+    const context = (config && config.context) || {};
+    const results = await classifier.classifyFiles(files, { llm: llmConfig, context });
     ok(res, results);
   } catch (err) { fail(res, 500, err.message); }
 }
