@@ -321,15 +321,25 @@ async function analyzeWithLLM(files, llmConfig, context = {}) {
 相关目录：
 ${context.dirs.slice(0, 20).map(d => `- ${d}`).join('\n')}` : '';
 
-  const fileList = files.map(f => ({
-    name: f.name,
-    path: f.path,
-    dir: f.dir,
-    size: f.size,
-    ext: f.extension || 'none',
-    existingFileType: f.fileType,
-    existingTheme: f.contentTheme,
-  }));
+  // 使用内部 ID 代替绝对路径，保护隐私
+  const fileIdMap = new Map();
+  files.forEach((f, i) => {
+    const fid = 'file_' + String(i).padStart(4, '0');
+    fileIdMap.set(f.path, { fid, file: f });
+  });
+
+  const fileList = files.map(f => {
+    const { fid } = fileIdMap.get(f.path);
+    return {
+      id: fid,
+      name: f.name,
+      dir: path.basename(f.dir),  // 只传目录名，不传绝对路径
+      size: f.size,
+      ext: f.extension || 'none',
+      existingFileType: f.fileType,
+      existingTheme: f.contentTheme,
+    };
+  });
 
   const prompt = `你是文件整理助手。请分析以下文件，帮助回答三个问题：
 
@@ -343,7 +353,7 @@ ${JSON.stringify(fileList, null, 2)}
 ${dirContext}
 
 请以 JSON 数组格式返回，每个元素包含：
-{ "path": "文件完整路径", "fileType": "...", "contentTheme": "...", "isSensitive": false, "suggestedTarget": "...", "confidence": 0-1, "reason": "简短理由" }
+{ "id": "file_0001", "fileType": "...", "contentTheme": "...", "isSensitive": false, "suggestedTarget": "...", "confidence": 0-1, "reason": "简短理由" }
 
 只返回 JSON 数组，不要其他文字。如果对某个文件不确定，confidence 设为 0.3-0.5。`;
 
@@ -379,7 +389,18 @@ ${dirContext}
     throw new Error('LLM 返回格式无效，无法提取 JSON');
   }
 
-  return JSON.parse(jsonMatch[0]);
+  const llmResults = JSON.parse(jsonMatch[0]);
+
+  // 将 ID 映射回文件路径
+  const idToPath = new Map();
+  for (const [path, { fid }] of fileIdMap) {
+    idToPath.set(fid, path);
+  }
+
+  return llmResults.map(r => ({
+    ...r,
+    _path: idToPath.get(r.id) || r.id,
+  }));
 }
 
 /**
@@ -501,7 +522,7 @@ async function classifyFiles(files, config = {}) {
           try {
             const llmResults = await analyzeWithLLM(batch, config.llm, context);
             for (const llmResult of llmResults) {
-              const idx = results.findIndex(r => r.path === llmResult.path);
+              const idx = results.findIndex(r => r.path === llmResult._path);
               if (idx >= 0) {
                 const r = results[idx];
                 if (llmResult.fileType && llmResult.fileType !== r.fileType) {
