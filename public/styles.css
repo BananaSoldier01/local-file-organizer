@@ -414,6 +414,7 @@ html, body {
   justify-content: center; height: 100%; gap: 14px;
 }
 .execute-progress { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 8px; }
+  .execute-actions { margin-top: 12px; display: flex; justify-content: center; gap: 8px; }
 .progress-bar { height: 5px; background: var(--bg-active); border-radius: 3px; overflow: hidden; }
 .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
 .execute-text { font-size: 14px; font-weight: 500; color: var(--text-primary); text-align: center; }

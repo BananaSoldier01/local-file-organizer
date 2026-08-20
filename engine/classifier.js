@@ -414,7 +414,7 @@ async function detectProjectGroups(files, llmConfig) {
   const summary = files.map((f, i) => ({
     index: i,
     name: f.name,
-    dir: f.dir,
+    dir: path.basename(f.dir),  // 只传目录名，不传绝对路径
   }));
 
   const prompt = `以下是某个文件夹中的文件列表。请识别哪些文件可能属于同一个项目或主题，将它们分组。
@@ -588,9 +588,64 @@ function getFileTypes() {
   }));
 }
 
+/**
+ * 对单批文件执行规则 + LLM 分类。
+ * 供异步 classify job 调用，每批独立 try/catch。
+ *
+ * @param {Array} files  文件列表
+ * @param {object} config  配置 { llm, context, detectProjects }
+ * @returns {Promise<Array>}  分类结果
+ */
+async function classifyBatch(files, config = {}) {
+  // 先走规则分类
+  const results = classifyByRules(files);
+
+  // LLM 辅助分析
+  if (config.llm && config.llm.enabled && config.llm.apiKey) {
+    const needsLLM = results.filter(r =>
+      r.confidence < 0.6 ||
+      r.riskFlag.includes('sensitive') ||
+      r.riskFlag.includes('no_extension') ||
+      r.contentTheme === '默认'
+    );
+
+    if (needsLLM.length > 0) {
+      try {
+        const llmResults = await analyzeWithLLM(needsLLM, config.llm, config.context || {});
+        for (const llmResult of llmResults) {
+          const idx = results.findIndex(r => r.path === llmResult._path);
+          if (idx >= 0) {
+            const r = results[idx];
+            if (llmResult.fileType && llmResult.fileType !== r.fileType) {
+              r.fileType = llmResult.fileType;
+              r.fileTypeLabel = FILE_TYPES[llmResult.fileType]?.label || llmResult.fileType;
+            }
+            if (llmResult.contentTheme && llmResult.contentTheme !== '默认') {
+              r.contentTheme = llmResult.contentTheme;
+            }
+            if (llmResult.isSensitive) {
+              if (!r.riskFlag.includes('sensitive')) r.riskFlag.push('sensitive');
+            }
+            if (llmResult.suggestedTarget) {
+              r.suggestedTarget = llmResult.suggestedTarget;
+            }
+            if (llmResult.reason) r.llmReason = llmResult.reason;
+          }
+        }
+      } catch (err) {
+        console.warn('[classifier] batch LLM failed:', err.message);
+        // 单批 LLM 失败不影响其他批次
+      }
+    }
+  }
+
+  return results;
+}
+
 module.exports = {
   classifyByRules,
   classifyFiles,
+  classifyBatch,
   analyzeWithLLM,
   detectProjectGroups,
   getFileTypes,

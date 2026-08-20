@@ -108,17 +108,43 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/scan-result' && req.method === 'GET') {
     return handleScanResult(req, res);
   }
+  if (pathname === '/api/classify-progress' && req.method === 'GET') {
+    return handleClassifyProgress(req, res);
+  }
+  if (pathname === '/api/classify-result' && req.method === 'GET') {
+    return handleClassifyResult(req, res);
+  }
+  if (pathname === '/api/classify-cancel' && req.method === 'POST') {
+    return handleClassifyCancel(req, res);
+  }
   if (pathname === '/api/execute-progress' && req.method === 'GET') {
     return handleExecuteProgress(req, res);
   }
   if (pathname === '/api/execute-cancel' && req.method === 'POST') {
     return handleExecuteCancel(req, res);
   }
+  if (pathname === '/api/job' && req.method === 'GET') {
+    const type = parsedUrl.query.type;
+    const id = parsedUrl.query.id;
+    if (!type || !id) return fail(res, 400, '缺少 type 或 id');
+    const result = pollJob(type, id);
+    if (result.error) return fail(res, 404, result.error);
+    return ok(res, result);
+  }
   if (pathname === '/api/pick-folder' && req.method === 'POST') {
     return await handlePickFolder(req, res);
   }
   if (pathname === '/api/classify' && req.method === 'POST') {
     return await handleClassify(req, res);
+  }
+  if (pathname === '/api/classify-progress' && req.method === 'GET') {
+    return handleClassifyProgress(req, res);
+  }
+  if (pathname === '/api/classify-result' && req.method === 'GET') {
+    return handleClassifyResult(req, res);
+  }
+  if (pathname === '/api/classify-cancel' && req.method === 'POST') {
+    return handleClassifyCancel(req, res);
   }
   if (pathname === '/api/plan' && req.method === 'POST') {
     return await handlePlan(req, res);
@@ -174,8 +200,63 @@ const jobMaps = {
   execute: new Map(),
 };
 
+// 受信任的 Plan 存储：planId → { sourceRoot, moves, targetRoot, createdAt }
+const planStore = new Map();
+
 function cleanupJob(map, id, delayMs = 30000) {
   setTimeout(() => map.delete(id), delayMs);
+}
+
+function cleanupPlan(id, delayMs = 120000) {
+  setTimeout(() => planStore.delete(id), delayMs);
+}
+
+/**
+ * 统一轮询入口。
+ * 前端只传 type + id，不直接访问各 Job 的内部字段。
+ */
+function pollJob(type, id) {
+  const map = jobMaps[type];
+  if (!map) return { error: '未知 Job 类型: ' + type };
+  const job = map.get(id);
+  if (!job) return { error: 'Job 不存在: ' + id };
+
+  const base = {
+    id: job.scanId || job.classifyId || job.execId,
+    type,
+    status: job.status,
+    done: false,
+  };
+
+  if (type === 'scan') {
+    base.percent = job.percent;
+    base.files = job.files;
+    base.dirs = job.dirs;
+    base.scannedDirs = job.scannedDirs;
+    base.totalDirs = job.totalDirs;
+    base.error = job.error;
+    base.done = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
+  } else if (type === 'classify') {
+    base.totalFiles = job.totalFiles;
+    base.processedFiles = job.processedFiles;
+    base.totalBatches = job.totalBatches;
+    base.completedBatches = job.completedBatches;
+    base.failedBatches = job.failedBatches;
+    base.error = job.error;
+    base.done = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled';
+  } else if (type === 'execute') {
+    base.total = job.total;
+    base.completed = job.completed;
+    base.failed = job.failedCount;
+    base.skipped = job.skippedCount;
+    base.currentFile = job.currentFile;
+    base.successCount = job.success.length;
+    base.sessionId = job.sessionId;
+    base.error = job.error;
+    base.done = job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled_partial';
+  }
+
+  return base;
 }
 
 // ── 扫描 Job ──────────────────────────────────────────────
@@ -318,28 +399,149 @@ function readBody(req) {
   });
 }
 
+// ── 分类 Job ──────────────────────────────────────────────
+function createClassifyJob(files, config) {
+  const classifyId = 'cls_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const settings = loadSettings();
+  const llmConfig = (config && config.llm) || settings.llm;
+  const context = (config && config.context) || {};
+  const detectProjects = (config && config.detectProjects) || false;
+
+  const job = {
+    classifyId,
+    status: 'queued',       // queued → preparing → running → completed | partial | failed | cancelled
+    totalFiles: files.length,
+    processedFiles: 0,
+    totalBatches: 0,
+    completedBatches: 0,
+    failedBatches: 0,
+    results: null,
+    error: null,
+    cancelRequested: false,
+    createdAt: Date.now(),
+  };
+
+  jobMaps.classify.set(classifyId, job);
+
+  (async () => {
+    try {
+      job.status = 'preparing';
+
+      const BATCH_SIZE = 20;
+      const batches = [];
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        batches.push(files.slice(i, i + BATCH_SIZE));
+      }
+      job.totalBatches = batches.length;
+
+      job.status = 'running';
+      const allResults = [];
+
+      for (let bi = 0; bi < batches.length; bi++) {
+        if (job.cancelRequested) {
+          job.status = 'cancelled';
+          break;
+        }
+
+        const batch = batches[bi];
+        try {
+          const batchResults = await classifier.classifyBatch(batch, { llm: llmConfig, context, detectProjects });
+          allResults.push(...batchResults);
+          job.completedBatches++;
+        } catch (batchErr) {
+          console.warn('[classify] batch ' + bi + ' failed:', batchErr.message);
+          job.failedBatches++;
+          // 单批失败不影响其他批次，继续
+        }
+        job.processedFiles = Math.min(files.length, (bi + 1) * BATCH_SIZE);
+      }
+
+      if (job.status !== 'cancelled') {
+        job.status = job.failedBatches > 0 ? 'partial' : 'completed';
+      }
+      job.results = allResults;
+
+      cleanupJob(jobMaps.classify, classifyId);
+    } catch (err) {
+      job.status = 'failed';
+      job.error = err.message;
+      cleanupJob(jobMaps.classify, classifyId);
+    }
+  })();
+
+  return classifyId;
+}
+
 async function handleClassify(req, res) {
   try {
     const body = await readBody(req);
     const { files, config } = body;
     if (!files) return fail(res, 400, '缺少 files');
-    const settings = loadSettings();
-    const llmConfig = (config && config.llm) || settings.llm;
-    const context = (config && config.context) || {};
-    const detectProjects = (config && config.detectProjects) || false;
-    const results = await classifier.classifyFiles(files, { llm: llmConfig, context, detectProjects });
-    ok(res, results);
+
+    const classifyId = createClassifyJob(files, config);
+    ok(res, { classifyId, status: 'queued', totalFiles: files.length });
   } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleClassifyProgress(req, res) {
+  const classifyId = url.parse(req.url, true).query.classifyId;
+  const job = jobMaps.classify.get(classifyId);
+  if (!job) return fail(res, 404, '分类任务不存在');
+  ok(res, {
+    classifyId: job.classifyId,
+    status: job.status,
+    totalFiles: job.totalFiles,
+    processedFiles: job.processedFiles,
+    totalBatches: job.totalBatches,
+    completedBatches: job.completedBatches,
+    failedBatches: job.failedBatches,
+    error: job.error,
+    done: job.status === 'completed' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled',
+  });
+}
+
+function handleClassifyResult(req, res) {
+  const classifyId = url.parse(req.url, true).query.classifyId;
+  const job = jobMaps.classify.get(classifyId);
+  if (!job) return fail(res, 404, '分类任务不存在');
+  if (job.status !== 'completed' && job.status !== 'partial') {
+    return fail(res, 400, '分类未完成，当前状态: ' + job.status);
+  }
+  ok(res, job.results);
+}
+
+function handleClassifyCancel(req, res) {
+  const classifyId = url.parse(req.url, true).query.classifyId;
+  const job = jobMaps.classify.get(classifyId);
+  if (!job) return fail(res, 404, '分类任务不存在');
+  if (job.status === 'running') {
+    job.cancelRequested = true;
+    ok(res, { cancelled: true });
+  } else {
+    fail(res, 400, '任务当前状态不可取消: ' + job.status);
+  }
 }
 
 async function handlePlan(req, res) {
   try {
     const body = await readBody(req);
-    const { files, options } = body;
+    const { files, options, sourceRoot } = body;
     if (!files) return fail(res, 400, '缺少 files');
     const plan = organizer.generatePlan(files, options);
     const validation = organizer.validatePlan(plan);
-    ok(res, { ...plan, validation });
+
+    // 存储受信任的 plan，供 execute 使用
+    const planId = 'plan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    planStore.set(planId, {
+      planId,
+      sourceRoot: sourceRoot || null,
+      moves: plan.moves,
+      targetRoot: plan.targetRoot,
+      createdAt: Date.now(),
+    });
+    cleanupPlan(planId);
+
+    ok(res, { ...plan, validation, planId });
   } catch (err) { fail(res, 500, err.message); }
 }
 
@@ -348,11 +550,11 @@ function createExecuteJob(plan, conflictStrategy, sourceRoot) {
   const execId = 'exec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   const job = {
     execId,
-    status: 'queued',       // queued → running → completed | partial | failed | cancelled
+    status: 'queued',       // queued → running → completed | partial | failed | cancelled_partial
     total: plan.moves.length,
     completed: 0,
-    failed: 0,
-    skipped: 0,
+    failedCount: 0,
+    skippedCount: 0,
     currentFile: null,
     success: [],
     failed: [],
@@ -384,7 +586,7 @@ function createExecuteJob(plan, conflictStrategy, sourceRoot) {
           // 执行前安全检查
           const safety = executor.checkMoveSafety(move, sourceRoot);
           if (!safety.safe) {
-            job.skipped++;
+            job.skippedCount++;
             job.skipped.push({ ...move, reason: safety.reason });
             job.completed++;
             continue;
@@ -395,12 +597,12 @@ function createExecuteJob(plan, conflictStrategy, sourceRoot) {
             job.success.push(result);
             job.completed++;
           } else {
-            job.failed++;
+            job.failedCount++;
             job.failed.push({ ...move, error: result.error });
             job.completed++;
           }
         } catch (err) {
-          job.failed++;
+          job.failedCount++;
           job.failed.push({ ...move, error: err.message });
           job.completed++;
         }
@@ -440,10 +642,44 @@ function createExecuteJob(plan, conflictStrategy, sourceRoot) {
 async function handleExecute(req, res) {
   try {
     const body = await readBody(req);
-    const { plan, conflictStrategy, sourceRoot } = body;
-    if (!plan) return fail(res, 400, '缺少 plan');
+    const { planId, conflictStrategy } = body;
 
-    // 立即创建异步 Job，返回 execId
+    // 优先使用 planId 从服务器受信任存储中获取 plan
+    let plan = null;
+    let sourceRoot = null;
+
+    if (planId) {
+      const stored = planStore.get(planId);
+      if (!stored) return fail(res, 404, 'planId 不存在或已过期');
+      plan = { moves: stored.moves, targetRoot: stored.targetRoot };
+      sourceRoot = stored.sourceRoot;
+    } else if (body.plan) {
+      // 兼容旧版直接提交 plan（已标记为不安全，仅用于测试）
+      plan = body.plan;
+      sourceRoot = body.sourceRoot || null;
+      console.warn('[security] 客户端直接提交 plan 而非 planId');
+    } else {
+      return fail(res, 400, '缺少 planId 或 plan');
+    }
+
+    // 执行前服务端路径验证
+    if (sourceRoot) {
+      const realRoot = fs.realpathSync(sourceRoot);
+      for (const move of plan.moves) {
+        const realFrom = fs.realpathSync(move.from);
+        if (!realFrom.startsWith(realRoot + path.sep) && realFrom !== realRoot) {
+          return fail(res, 403, '源文件路径越界: ' + move.from);
+        }
+        // target 不需要限制在 sourceRoot 内，但需要检查 target parent 不是 source 的子目录
+        const realToParent = path.dirname(fs.realpathSync(move.to));
+        if (realToParent === realRoot || realToParent.startsWith(realRoot + path.sep)) {
+          // target 在 source 树内 —— 仅当 target 是分类目录时允许
+          // 简单策略：target 必须在 sourceRoot 之外
+          return fail(res, 403, '目标路径不能在源目录树内: ' + move.to);
+        }
+      }
+    }
+
     const execId = createExecuteJob(plan, conflictStrategy, sourceRoot);
     ok(res, { execId, status: 'queued', total: plan.moves.length });
   } catch (err) { fail(res, 500, err.message); }
@@ -458,8 +694,8 @@ function handleExecuteProgress(req, res) {
     status: job.status,
     total: job.total,
     completed: job.completed,
-    failed: job.failed,
-    skipped: job.skipped,
+    failed: job.failedCount,
+    skipped: job.skippedCount,
     currentFile: job.currentFile,
     successCount: job.success.length,
     sessionId: job.sessionId,

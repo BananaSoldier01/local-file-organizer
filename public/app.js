@@ -40,11 +40,15 @@ const API = {
   scanResult(scanId) { return this.get('/api/scan-result?scanId=' + encodeURIComponent(scanId)); },
   pickFolder() { return this.post('/api/pick-folder', {}); },
   classify(files, config) { return this.post('/api/classify', { files, config }); },
+  classifyProgress(classifyId) { return this.get('/api/classify-progress?classifyId=' + encodeURIComponent(classifyId)); },
+  classifyResult(classifyId) { return this.get('/api/classify-result?classifyId=' + encodeURIComponent(classifyId)); },
+  classifyCancel(classifyId) { return this.post('/api/classify-cancel', { classifyId }); },
   generatePlan(files, options) { return this.post('/api/plan', { files, options }); },
-  executePlan(plan, opts) { return this.post('/api/execute', { plan, conflictStrategy: opts?.conflictStrategy, sourceRoot: opts?.sourceRoot }); },
+  executePlan(opts) { return this.post('/api/execute', { planId: opts?.planId, conflictStrategy: opts?.conflictStrategy }); },
   executeProgress(execId) { return this.get('/api/execute-progress?execId=' + encodeURIComponent(execId)); },
   executeCancel(execId) { return this.post('/api/execute-cancel', { execId }); },
   undo(sessionId) { return this.post('/api/undo', { sessionId }); },
+  job(type, id) { return this.get('/api/job?type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id)); },
   getHistory(limit) { return this.get('/api/history?limit=' + (limit || 50)); },
   getHistoryStats() { return this.get('/api/history/stats'); },
   clearHistory() { return this.post('/api/history/clear'); },
@@ -291,6 +295,7 @@ function bindEvents() {
 
   $('btn-execute').addEventListener('click', executePlan);
   $('btn-execute-bottom').addEventListener('click', executePlan);
+  $('btn-cancel-execute').addEventListener('click', cancelExecute);
   $('btn-undo-last').addEventListener('click', undoLast);
   $('btn-new-scan').addEventListener('click', newScan);
   $('btn-back').addEventListener('click', () => { showState('workspace'); });
@@ -354,79 +359,83 @@ async function startScan(folderPath) {
     const scanId = createResult.data.scanId;
     if (!scanId) throw new Error('未获取到 scanId');
 
-    // 2. 轮询真实进度
-    const pollInterval = setInterval(async () => {
-      try {
-        const prog = await API.scanProgress(scanId);
-        const d = prog.data;
-        $('scan-percent').textContent = d.percent + '%';
+    // 2. 统一轮询 —— 单个 loop，无硬超时
+    while (true) {
+      const prog = await API.job('scan', scanId);
+      const d = prog.data;
+      if (d.error) throw new Error(d.error);
 
-        // 显示详细进度信息
-        if (d.status === 'preparing') {
-          $('scan-text').textContent = '准备扫描…';
-          $('scan-detail').textContent = '正在遍历目录结构';
-        } else if (d.status === 'scanning') {
-          $('scan-text').textContent = '正在扫描…';
-          if (d.totalDirs > 0) {
-            $('scan-detail').textContent = `已扫描 ${d.scannedDirs || 0} / ${d.totalDirs} 个目录，${d.files || 0} 个文件`;
-          } else {
-            $('scan-detail').textContent = `已发现 ${d.files || 0} 个文件`;
-          }
-        } else if (d.status === 'analyzing') {
-          $('scan-text').textContent = '正在分析…';
-          $('scan-detail').textContent = `已发现 ${d.files || 0} 个文件，正在分析`;
-        } else if (d.status === 'completed') {
-          $('scan-text').textContent = '扫描完成';
-          $('scan-detail').textContent = `共 ${d.files || 0} 个文件`;
-        } else if (d.status === 'failed') {
-          $('scan-text').textContent = '扫描失败';
-          $('scan-detail').textContent = d.error || '未知错误';
-        }
+      $('scan-percent').textContent = d.percent + '%';
 
-        if (d.done) {
-          clearInterval(pollInterval);
+      if (d.status === 'preparing') {
+        $('scan-text').textContent = '准备扫描…';
+        $('scan-detail').textContent = '正在遍历目录结构';
+      } else if (d.status === 'scanning') {
+        $('scan-text').textContent = '正在扫描…';
+        if (d.totalDirs > 0) {
+          $('scan-detail').textContent = `已扫描 ${d.scannedDirs || 0} / ${d.totalDirs} 个目录，${d.files || 0} 个文件`;
+        } else {
+          $('scan-detail').textContent = `已发现 ${d.files || 0} 个文件`;
         }
-      } catch (_) { /* 忽略轮询错误 */ }
-    }, 150);
-
-    // 3. 等待扫描完成
-    let retries = 0;
-    while (retries < 200) {
-      const prog = await API.scanProgress(scanId);
-      if (prog.data.done) {
-        if (prog.data.status === 'failed') {
-          throw new Error(prog.data.error || '扫描失败');
-        }
+      } else if (d.status === 'completed') {
+        $('scan-text').textContent = '扫描完成';
+        $('scan-detail').textContent = `共 ${d.files || 0} 个文件`;
         break;
+      } else if (d.status === 'failed') {
+        throw new Error(d.error || '扫描失败');
       }
-      await new Promise(r => setTimeout(r, 200));
-      retries++;
-    }
-    if (retries >= 200) throw new Error('扫描超时');
 
-    // 4. 获取扫描结果
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    // 3. 获取扫描结果
     const scanResult = await API.scanResult(scanId);
     state.files = scanResult.data.files;
     state.currentFolder = folderPath;
 
-    // 5. 分类
+    // 4. 分类（异步 Job）
     $('scan-text').textContent = '正在分析…';
     $('scan-detail').textContent = `已发现 ${state.files.length} 个文件，正在分类`;
 
     const classifyResult = await API.classify(state.files, {
       llm: state.settings.llm,
       detectProjects: true,
-      context: { dirs: [...new Set(state.files.map(f => f.dir))].slice(0, 20) },
+      context: { dirs: [...new Set(state.files.map(f => path.basename(f.dir)))].slice(0, 20) },
     });
 
-    state.classifiedFiles = classifyResult.data;
+    const classifyId = classifyResult.data.classifyId;
 
-    // 6. 生成方案
-    state.plan = (await API.generatePlan(state.classifiedFiles, {
+    // 轮询分类进度
+    while (true) {
+      const cp = await API.classifyProgress(classifyId);
+      const cd = cp.data;
+      if (cd.error) throw new Error(cd.error);
+
+      $('scan-text').textContent = `分类中… (${cd.completedBatches}/${cd.totalBatches} 批)`;
+      $('scan-detail').textContent = `已处理 ${cd.processedFiles || 0} / ${cd.totalFiles} 个文件`;
+
+      if (cd.status === 'completed' || cd.status === 'partial') {
+        $('scan-text').textContent = cd.status === 'partial' ? '分类完成（部分）' : '分类完成';
+        break;
+      } else if (cd.status === 'failed') {
+        throw new Error(cd.error || '分类失败');
+      }
+
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const classifiedData = (await API.classifyResult(classifyId)).data;
+    state.classifiedFiles = classifiedData;
+
+    // 5. 生成方案
+    const planResult = await API.generatePlan(state.classifiedFiles, {
       targetRoot: state.customTargetRoot,
-    })).data;
+      sourceRoot: state.currentFolder,
+    });
+    state.plan = planResult.data;
+    state.planId = planResult.data.planId;
 
-    // 7. 更新 UI
+    // 6. 更新 UI
     updateSidebarStats();
     $('topbar-path').textContent = folderPath;
     $('custom-target-input').value = state.customTargetRoot || '';
@@ -761,66 +770,43 @@ async function executePlan() {
   $('execute-text').textContent = '正在整理文件…';
   $('execute-detail').textContent = '0 / ' + moves.length;
 
-  const plan = { ...state.plan, moves, targetRoot: state.customTargetRoot || state.currentFolder };
-
   try {
-    // 1. 创建异步执行 Job
-    const createResult = await API.executePlan(plan, {
+    // 1. 使用 planId 创建异步执行 Job（服务器端可信验证）
+    const createResult = await API.executePlan({
+      planId: state.planId,
       conflictStrategy: state.settings.conflictStrategy || { overwrite: 'skip' },
-      sourceRoot: state.currentFolder,
     });
 
     const execId = createResult.data.execId;
     if (!execId) throw new Error('未获取到 execId');
 
-    // 2. 轮询真实进度
-    const pollInterval = setInterval(async () => {
-      try {
-        const prog = await API.executeProgress(execId);
-        const d = prog.data;
-        const pct = d.total > 0 ? Math.round((d.completed / d.total) * 100) : 0;
-        $('execute-progress-fill').style.width = pct + '%';
-        $('execute-text').textContent = statusLabel(d.status);
-        $('execute-detail').textContent =
-          `${d.completed || 0} / ${d.total} · ` +
-          (d.currentFile ? path.basename(d.currentFile) : '') +
-          (d.failed > 0 ? ` · ${d.failed} 失败` : '');
-      } catch (_) { /* 忽略轮询错误 */ }
-    }, 200);
-
-    // 3. 等待完成
-    let retries = 0;
-    while (retries < 300) {
-      const prog = await API.executeProgress(execId);
+    // 2. 统一轮询 —— 单个 loop，无硬超时
+    while (true) {
+      const prog = await API.job('execute', execId);
       const d = prog.data;
-      if (d.done) {
-        clearInterval(pollInterval);
-        $('execute-progress-fill').style.width = '100%';
+      if (d.error) throw new Error(d.error);
 
+      const pct = d.total > 0 ? Math.round((d.completed / d.total) * 100) : 0;
+      $('execute-progress-fill').style.width = pct + '%';
+      $('execute-text').textContent = statusLabel(d.status);
+      $('execute-detail').textContent =
+        `${d.completed || 0} / ${d.total} · ` +
+        (d.currentFile ? path.basename(d.currentFile) : '') +
+        (d.failed > 0 ? ` · ${d.failed} 失败` : '');
+
+      if (d.done) {
+        $('execute-progress-fill').style.width = '100%';
         $('done-title').textContent = d.status === 'cancelled_partial' ? '已取消（部分完成）' : '整理完成';
         $('done-detail').textContent =
           `已移动 ${d.successCount || 0} 个文件` +
           (d.failed > 0 ? `，${d.failed} 个失败` : '') +
           (d.skipped > 0 ? `，${d.skipped} 个跳过` : '') +
           (d.status === 'cancelled_partial' ? `（已取消，完成 ${d.completed}/${d.total}）` : '');
-
-        if (d.failed > 0) {
-          toast(`${d.failed} 个文件移动失败`, 'error');
-        } else if (d.status === 'cancelled_partial') {
-          toast('已取消整理', 'warning');
-        } else {
-          toast('整理完成', 'success');
-        }
-
-        state._lastSessionId = d.sessionId;
-        showState('done');
-        return;
+        break;
       }
-      await new Promise(r => setTimeout(r, 300));
-      retries++;
+
+      await new Promise(r => setTimeout(r, 200));
     }
-    clearInterval(pollInterval);
-    throw new Error('执行超时');
   } catch (err) {
     toast('执行失败: ' + err.message, 'error');
     showState('workspace');
@@ -837,6 +823,24 @@ function statusLabel(status) {
     cancelled_partial: '已取消',
   };
   return labels[status] || status;
+}
+
+// ── Execute 取消 ────────────────────────────────────────────
+let currentExecId = null;
+
+async function cancelExecute() {
+  if (!currentExecId) return;
+  const confirmed = await showConfirm(
+    '取消整理？',
+    '确定要取消吗？已完成的文件不会回退，但后续操作将停止。已完成部分可以撤销。'
+  );
+  if (!confirmed) return;
+  try {
+    await API.executeCancel(currentExecId);
+    toast('已发送取消请求', 'info');
+  } catch (err) {
+    toast('取消失败: ' + err.message, 'error');
+  }
 }
 
 // ── 撤销 ──────────────────────────────────────────────────
