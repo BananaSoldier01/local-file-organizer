@@ -50,6 +50,23 @@ function generatePlan(classifiedFiles, options = {}) {
     rootDir = classifiedFiles[0]?.dir || null;
   }
 
+  // 路径越界检查：目标根目录必须在源文件目录树内
+  if (rootDir && classifiedFiles.length > 0) {
+    const firstFileDir = classifiedFiles[0].dir;
+    const resolvedRoot = path.resolve(rootDir);
+    const resolvedFileDir = path.resolve(firstFileDir);
+    if (!resolvedRoot.startsWith(resolvedFileDir) && !resolvedFileDir.startsWith(resolvedRoot)) {
+      // 目标根目录不在源目录树中，拒绝生成方案
+      return {
+        moves: [],
+        conflicts: [],
+        summary: {},
+        targetRoot: rootDir,
+        error: '目标目录不在源文件夹范围内，拒绝执行越界操作',
+      };
+    }
+  }
+
   for (const file of classifiedFiles) {
     const targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
 

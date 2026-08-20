@@ -27,7 +27,12 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'settings.json');
 function loadSettings() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      // 安全：确保 overwrite 不是默认值
+      if (!raw.conflictStrategy || !raw.conflictStrategy.overwrite) {
+        raw.conflictStrategy = { overwrite: 'skip' };
+      }
+      return raw;
     }
   } catch (err) {
     console.warn('[settings] 加载失败:', err.message);
