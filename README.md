@@ -230,3 +230,34 @@ node server.js
 - [ ] 跨平台文件夹选择
 - [ ] Electron 桌面封装
 - [ ] Content Extractor（PDF/DOCX/PPTX/XLSX 内容理解）
+
+---
+
+## 更新日志
+
+### V0.4.2.1 — Relationship Integrity & Product Wiring
+
+- 主题相同不能单独建立关系（需实体/关键词/名称额外证据）
+- 候选索引替代全量 N²（倒排索引：实体/关键词/目录）
+- Group Cohesion 替代简单连通分量（强核心边 + 实体一致性 + 边密度）
+- Group Evidence 修复（真共享实体 + 覆盖率置信度）
+- Precision/Recall/FPR 评估：P=1.0, R=1.0, F1=1.0, FPR=0.0
+- Hard Negatives：多项目同主题、bridge file、公共模板、同目录不同项目
+- 231/231 测试通过
+
+### V0.4.2 — File Relationship Intelligence
+
+- 语义指纹（`engine/fingerprint.js`）
+- 相似度引擎（`engine/similarity.js`）
+- 关系图 + 分组建议（`engine/relationship.js`）
+- 关系评估（`test/relationship.js`）
+- `POST /api/relationship` 端点
+- 218/218 测试通过
+
+### V0.4.1.1 — Content Contract & Evaluation Integrity
+
+- FileEntry Contract 统一（extension 不带点）
+- Cache Key 修正（modified 替代 mtime）
+- Evaluation 走真实 Pipeline
+- Confidence 拆分（summaryConfidence / suggestionConfidence）
+- 175/175 测试通过
