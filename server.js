@@ -583,6 +583,9 @@ function createClassifyJob(files, config) {
     createdAt: Date.now(),
   };
 
+  // V0.4: 内容感知分类开关（默认开启）
+  const contentAware = (config && config.contentAware !== false);
+
   jobMaps.classify.set(classifyId, job);
 
   (async () => {
@@ -607,7 +610,7 @@ function createClassifyJob(files, config) {
 
         const batch = batches[bi];
         try {
-          const batchResults = await classifier.classifyBatch(batch, { llm: llmConfig, context, detectProjects: false });
+          const batchResults = await classifier.classifyBatch(batch, { llm: llmConfig, context, detectProjects: false, contentAware });
           allResults.push(...batchResults);
           job.completedBatches++;
         } catch (batchErr) {
@@ -755,6 +758,29 @@ async function handlePlan(req, res) {
       const tr = options.targetRoot;
       if (!path.isAbsolute(tr)) {
         options.targetRoot = path.resolve(sourceRoot, tr);
+      }
+      // 验证解析后的 targetRoot 是否在 sourceRoot 内（防止 ../ 逃逸）
+      // sourceRoot 是 canonicalRoot（已 realpath），targetRoot 可能是 /var 而非 /private/var
+      // 需要将 targetRoot 也 canonicalize 后再比较
+      const resolvedTarget = path.resolve(options.targetRoot);
+      // 尝试 realpath targetRoot（目标目录可能尚不存在，先试本身再试父目录）
+      let canonicalTarget;
+      try {
+        canonicalTarget = fs.realpathSync(resolvedTarget);
+      } catch (_) {
+        // 目标目录不存在，尝试解析父目录
+        try {
+          const parent = path.dirname(resolvedTarget);
+          const parentReal = fs.realpathSync(parent);
+          canonicalTarget = path.join(parentReal, path.basename(resolvedTarget));
+        } catch (_) {
+          // 父目录也不存在，回退到 resolve 结果
+          canonicalTarget = resolvedTarget;
+        }
+      }
+      const rel = path.relative(sourceRoot, canonicalTarget);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        return fail(res, 403, `整理目标必须在扫描根目录内: ${options.targetRoot}`);
       }
     }
 

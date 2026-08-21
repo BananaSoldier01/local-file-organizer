@@ -1,10 +1,10 @@
 # ROADMAP
 
-> 最后更新：V0.3.5.1
+> 最后更新：V0.4.0
 
 ---
 
-## 当前阶段：V0.3.5.1 — Exit Hotfix ✅
+## 当前阶段：V0.4.0 — Content-Aware Organization 🔄
 
 V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
 
@@ -22,11 +22,26 @@ V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revisio
 
 ---
 
-## 下一阶段：V0.4.0 — Content-Aware Organization
+## 当前阶段：V0.4.0 — Content-Aware Organization 🔄
 
-核心方向：让整理判断开始真正利用"文件内容"，而不只是文件名 / 扩展名 / 路径。
+### V0.4.0 完成项
 
-V0.4 的具体 Goal 在 V0.3.5.1 通过后展开。
+- Content Extractor 统一接口（`engine/content-extractor.js`）
+- 第一批支持格式：txt / md / json / csv / 源码文件
+- Content-aware Classification（低可信才读内容）
+- Content Evidence 展示（Workspace tooltip）
+- Security Regression Tests（../ 越界 / 绝对路径 / 符号链接逃逸 / 外部注入）
+- API Contract Regression（字段连续性验证）
+- Evaluation System（metadata-only vs content-aware 对比）
+
+### V0.4.0 验收标准
+
+1. Content Extractor 有统一接口 ✅
+2. 分类流程支持内容辅助判断 ✅
+3. 内容读取有资源限制 ✅
+4. 用户能够看到分类依据 ✅
+5. 测试证明 Content-aware 比 metadata-only 更准确 ✅
+6. 原有 V0.3.x 全部测试保持通过 ✅
 
 V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
 

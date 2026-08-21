@@ -440,3 +440,54 @@
 - `session-ttl.js` 仍独立启动 server（因为它需要测试 TTL 行为本身）
 
 **状态**：V0.3.5.1 已实施。
+
+---
+
+## D-022：V0.4.0 — Content Extractor 独立模块
+
+**决策**：内容提取逻辑独立为 `engine/content-extractor.js` 模块，不直接嵌入 classifier。
+
+**理由**：
+
+- 分类器应关注"如何分类"，内容提取关注"如何读取和解析"
+- 独立模块便于扩展新格式（docx / pdf 等）
+- 便于独立测试内容提取逻辑
+
+**接口**：
+
+```javascript
+extract(file) → {
+  success,        // boolean
+  extractor,      // string: 'plain' | 'markdown' | 'json' | 'csv' | 'tsv' | 'skip'
+  metadata,       // object: 格式相关的元数据
+  textPreview,    // string: 前 500 字符预览
+  truncated,      // boolean: 是否超过最大字符限制
+  error           // string | null
+}
+```
+
+**Trade-off**：
+
+- 增加了模块数量
+- classifier 需要调用 content-extractor，增加了一次函数调用开销
+
+**状态**：V0.4.0 已实施。
+
+---
+
+## D-023：V0.4.0 — 内容辅助分类触发条件
+
+**决策**：仅对低置信度文件（confidence < 0.6 或 contentTheme === '默认'）读取内容。
+
+**理由**：
+
+- 高可信文件（如 .jpg → image）不需要内容辅助
+- 避免无差别读取全部文件，符合"不无差别读取全部文件"原则
+- 资源限制（1MB / 8000 字符）确保内容读取不会影响性能
+
+**Trade-off**：
+
+- 有些低置信度文件的内容可能仍然不足以提升分类（如无主题线索的纯文本）
+- 极少数情况下，高置信度文件可能因内容而需要调整分类
+
+**状态**：V0.4.0 已实施。

@@ -363,6 +363,9 @@ async function main() {
   // ═══════════════════════════════════════════════
   fs.rmSync(dir, { recursive: true, force: true });
 
+  // V0.4 新增测试
+  await mainV04();
+
   console.log('\n=== Summary ===');
   console.log(`  Passed: ${passed}`);
   console.log(`  Failed: ${failed}`);
@@ -373,6 +376,243 @@ async function main() {
     console.log('\n  ✅ 所有集成测试通过。');
     process.exit(0);
   }
+}
+
+// V0.4 新增测试入口
+async function mainV04() {
+  await securityTests();
+  await apiContractTests();
+}
+
+// ═══════════════════════════════════════════════
+// V0.4 Security Regression Tests
+// ═══════════════════════════════════════════════
+
+async function securityTests() {
+  console.log('\n=== Security Regression Tests ===\n');
+
+  // ── Target Root 边界测试 ──
+  console.log('1. Target Root 边界:');
+
+  // 创建测试目录
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-'));
+  fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'test.txt'), 'hello');
+  fs.writeFileSync(path.join(root, 'sub', 'nested.txt'), 'nested');
+
+  // 扫描
+  const scanRes = await api('POST', '/api/scan', { rootPath: root });
+  const scanId = scanRes.data.data.scanId;
+
+  // 等待扫描完成
+  for (let i = 0; i < 60; i++) {
+    const r = await api('GET', `/api/job?type=scan&id=${scanId}`);
+    if (r.data?.data?.done) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  const scanResult = await api('GET', `/api/scan-result?scanId=${scanId}`);
+  const files = scanResult.data.data.files;
+
+  // 分类
+  const clsRes = await api('POST', '/api/classify', {
+    files,
+    config: { llm: { enabled: false }, context: { dirs: [] } },
+  });
+  const classifyId = clsRes.data.data.classifyId;
+
+  for (let i = 0; i < 60; i++) {
+    const r = await api('GET', `/api/job?type=classify&id=${classifyId}`);
+    if (r.data?.data?.done) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  const clsResult = await api('GET', `/api/classify-result?classifyId=${classifyId}`);
+  const classified = clsResult.data.data.results || clsResult.data.data;
+
+  // ── 测试 1: ../ 越界 ──
+  console.log('  ../ 越界:');
+  {
+    const planRes = await api('POST', '/api/plan', {
+      files: classified,
+      options: { targetRoot: '../outside' },
+      scanId,
+    });
+    // 服务器应拒绝（403）
+    check(planRes.status === 403, `../outside 被拒绝 (status: ${planRes.status})`);
+  }
+
+  // ── 测试 2: 绝对路径 ──
+  console.log('  绝对路径:');
+  {
+    const planRes = await api('POST', '/api/plan', {
+      files: classified,
+      options: { targetRoot: '/etc' },
+      scanId,
+    });
+    // 服务器应拒绝（403）或解析到安全路径
+    const rejected = planRes.status === 403;
+    const targetRoot = planRes.data.data?.targetRoot;
+    check(rejected, `/etc 绝对路径被拒绝 (status: ${planRes.status})`);
+  }
+
+  // ── 测试 3: 符号链接逃逸 ──
+  console.log('  符号链接逃逸:');
+  {
+    // 在 scan root 外创建一个文件
+    const outsideFile = path.join(os.tmpdir(), 'sec-outside-' + Date.now() + '.txt');
+    fs.writeFileSync(outsideFile, 'outside');
+
+    // 尝试将外部文件注入 plan
+    const injectedFile = {
+      name: 'outside.txt',
+      path: outsideFile,
+      dir: os.tmpdir(),
+      size: fs.statSync(outsideFile).size,
+      extension: '.txt',
+    };
+
+    const planRes = await api('POST', '/api/plan', {
+      files: [injectedFile],
+      options: {},
+      scanId,
+    });
+    // 服务器应拒绝外部文件（403）
+    const rejected = planRes.status === 403;
+    check(rejected, `外部文件注入被拒绝 (status: ${planRes.status})`);
+
+    fs.unlinkSync(outsideFile);
+  }
+
+  // ── 测试 4: 正常 targetRoot 在范围内 ──
+  console.log('  正常 targetRoot:');
+  {
+    const planRes = await api('POST', '/api/plan', {
+      files: classified,
+      options: { targetRoot: path.join(root, '整理结果') },
+      scanId,
+    });
+    const targetRoot = planRes.data.data?.targetRoot;
+    check(planRes.status === 200 && targetRoot, `正常 targetRoot 在范围内 (status: ${planRes.status}, targetRoot: ${targetRoot})`);
+  }
+
+  // ── 测试 5: 相对 targetRoot 在范围内 ──
+  console.log('  相对 targetRoot:');
+  {
+    const planRes = await api('POST', '/api/plan', {
+      files: classified,
+      options: { targetRoot: '整理结果' },
+      scanId,
+    });
+    const targetRoot = planRes.data.data?.targetRoot;
+    check(planRes.status === 200 && targetRoot, `相对 targetRoot 解析到范围内 (status: ${planRes.status}, targetRoot: ${targetRoot})`);
+  }
+
+  // 清理
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ═══════════════════════════════════════════════
+// V0.4 API Contract Regression Tests
+// ═══════════════════════════════════════════════
+
+async function apiContractTests() {
+  console.log('\n=== API Contract Regression Tests ===\n');
+
+  // 创建测试目录
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'contract-'));
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'docs', 'report.pdf'), 'pdf-content');
+  fs.writeFileSync(path.join(root, 'docs', 'data.csv'), 'a,b,c\n1,2,3');
+
+  // 1. Scan
+  console.log('1. Scan → Classify → Plan → Execute → History 字段连续性:');
+  const scanRes = await api('POST', '/api/scan', { rootPath: root });
+  const scanId = scanRes.data.data.scanId;
+  check(scanId && scanId.startsWith('scan_'), `scanId 格式正确: ${scanId}`);
+
+  // 等待扫描
+  for (let i = 0; i < 60; i++) {
+    const r = await api('GET', `/api/job?type=scan&id=${scanId}`);
+    if (r.data?.data?.done) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  // 2. Classify
+  const scanResult = await api('GET', `/api/scan-result?scanId=${scanId}`);
+  const files = scanResult.data.data.files;
+  check(files && files.length > 0, `Scan 返回文件列表 (${files?.length} 个文件)`);
+
+  const clsRes = await api('POST', '/api/classify', {
+    files,
+    config: { llm: { enabled: false }, context: { dirs: [] } },
+  });
+  const classifyId = clsRes.data.data.classifyId;
+  check(classifyId && classifyId.startsWith('cls_'), `classifyId 格式正确: ${classifyId}`);
+
+  for (let i = 0; i < 60; i++) {
+    const r = await api('GET', `/api/job?type=classify&id=${classifyId}`);
+    if (r.data?.data?.done) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  const clsResult = await api('GET', `/api/classify-result?classifyId=${classifyId}`);
+  const classified = clsResult.data.data.results || clsResult.data.data;
+  check(classified && classified.length > 0, `Classify 返回结果 (${classified?.length} 个文件)`);
+
+  // 验证 classify 结果中的关键字段
+  const firstResult = classified[0];
+  check(firstResult.fileType !== undefined, `fileType 字段存在: ${firstResult.fileType}`);
+  check(firstResult.contentTheme !== undefined, `contentTheme 字段存在: ${firstResult.contentTheme}`);
+  check(firstResult.suggestedTarget !== undefined, `suggestedTarget 字段存在: ${firstResult.suggestedTarget}`);
+  check(firstResult.confidence !== undefined, `confidence 字段存在: ${firstResult.confidence}`);
+
+  // 3. Plan
+  const planRes = await api('POST', '/api/plan', {
+    files: classified,
+    options: {},
+    scanId,
+  });
+  const planId = planRes.data.data.planId;
+  check(planId && planId.startsWith('plan_'), `planId 格式正确: ${planId}`);
+
+  const moves = planRes.data.data.moves;
+  check(Array.isArray(moves), `moves 是数组 (${moves.length} 条移动)`);
+
+  // 验证 move 中的 from/to 字段
+  if (moves.length > 0) {
+    const firstMove = moves[0];
+    check(firstMove.from !== undefined, `move.from 字段存在`);
+    check(firstMove.to !== undefined, `move.to 字段存在`);
+    check(firstMove.category !== undefined, `move.category 字段存在: ${firstMove.category}`);
+  }
+
+  // 4. Execute
+  const execRes = await api('POST', '/api/execute', { planId });
+  const execId = execRes.data.data.execId;
+  check(execId && execId.startsWith('exec_'), `execId 格式正确: ${execId}`);
+
+  for (let i = 0; i < 60; i++) {
+    const r = await api('GET', `/api/job?type=execute&id=${execId}`);
+    if (r.data?.data?.done) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  // 5. History
+  const histRes = await api('GET', '/api/history');
+  const history = histRes.data.data;
+  check(Array.isArray(history), `history 是数组`);
+
+  if (history && history.length > 0) {
+    const lastSession = history[0];
+    check(lastSession.id !== undefined, `session.id 字段存在: ${lastSession.id}`);
+    check(lastSession.sourceDir !== undefined, `session.sourceDir 字段存在`);
+    check(lastSession.targetRoot !== undefined, `session.targetRoot 字段存在`);
+    check(Array.isArray(lastSession.moves), `session.moves 是数组`);
+  }
+
+  // 清理
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 main().catch(err => {

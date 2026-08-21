@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.5.1 · Exit Hotfix · 个人测试项目。
+> V0.4.0 · Content-Aware Organization · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -104,6 +104,20 @@ node server.js
 - **统一 Test Runner**：`test/run-with-server.js` 自动 spawn/kill server，`npm test` 可在干净环境运行全部测试
 - **Browser E2E 新增**：Last Write Wins Race（Playwright route 延迟注入）+ Target Root E2E，共 24/24 通过
 - **测试总数**：117/117 通过（smoke 11 + integration 43 + scenario 41 + e2e 24 + session-ttl 5）
+
+## V0.4.0 变化（Content-Aware Organization）
+
+核心目标：让文件整理从"基于文件名/扩展名判断"升级为"基于有限内容理解判断"。
+
+- **Content Extractor 统一接口**：`engine/content-extractor.js`，提供 `extract(file)` → `{ success, extractor, metadata, textPreview, truncated, error }`
+- **资源限制**：单文件最大读取 1MB，最大提取字符 8000，超大文件自动跳过，不支持格式自动降级
+- **第一批支持格式**：txt / md / json / csv / 常见源码文件（.js/.ts/.py/.java/.html/.css 等）
+- **Content-aware Classification**：低置信度文件（confidence < 0.6）才读取内容辅助判断；高可信文件不读取内容
+- **Content Evidence 展示**：Workspace 行 tooltip 显示分类依据（内容提取方式、推断主题、标题/JSON键/CSV表头等）
+- **Security Regression Tests**：../ 越界 / 绝对路径 / 符号链接逃逸 / 外部文件注入，全部被拒绝
+- **API Contract Regression**：scanId → classifyId → planId → execId → sessionId 字段连续性验证
+- **Evaluation System**：`test/evaluation.js` 对比 metadata-only vs content-aware 分类准确率
+- **测试总数**：126/126 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 9）
 
 ## V0.3.4 变化（Plan Integrity & Interaction Consistency）
 

@@ -631,6 +631,17 @@ function renderWorkspaceRow(file) {
     return `<span class="risk-dot ${cls[r] || ''}" title="${labels[r] || r}"></span>`;
   }).join('');
 
+  // V0.4: 内容证据 tooltip
+  const evidenceTooltip = file.contentEvidence
+    ? `分类依据: ${file.method || '规则'}\n` +
+      (file.contentEvidence.extractor ? `内容提取: ${file.contentEvidence.extractor}\n` : '') +
+      (file.contentEvidence.inferredTheme ? `内容推断: ${file.contentEvidence.inferredTheme}\n` : '') +
+      (file.contentEvidence.headings ? `标题: ${file.contentEvidence.headings.slice(0, 3).join(', ')}\n` : '') +
+      (file.contentEvidence.jsonKeys ? `JSON键: ${file.contentEvidence.jsonKeys.slice(0, 5).join(', ')}\n` : '') +
+      (file.contentEvidence.csvHeaders ? `CSV表头: ${file.contentEvidence.csvHeaders.slice(0, 5).join(', ')}\n` : '') +
+      (file.contentEvidence.skipped ? `已跳过: ${file.contentEvidence.reason}\n` : '')
+    : (file.reason || '');
+
   // 当前建议目标（可能被用户修改过）
   // 先获取对应的 move，再读取属性（修复 m is not defined 作用域错误）
   const move = state.plan?.moves.find(m => m.from === file.path);
@@ -650,7 +661,7 @@ function renderWorkspaceRow(file) {
       (isExcluded ? ' <span class="excluded-badge">已排除</span>' : '') +
     '</td>' +
     '<td><span class="ws-type-badge">' + escapeHtml(file.fileTypeLabel || file.fileType) + '</span></td>' +
-    '<td><input class="ws-theme-input" type="text" value="' + escapeHtml(file.contentTheme || '') + '" placeholder="主题" spellcheck="false"></td>' +
+    '<td><input class="ws-theme-input" type="text" value="' + escapeHtml(file.contentTheme || '') + '" placeholder="主题" spellcheck="false" title="' + escapeHtml(evidenceTooltip) + '"></td>' +
     '<td><input class="ws-target-input" type="text" value="' + escapeHtml(currentTarget) + '" placeholder="目标目录" spellcheck="false"></td>' +
     '<td><div class="ws-risk-dots">' + riskDots + '</div></td>' +
     '<td class="ws-size">' + formatSize(file.size) + '</td>' +
