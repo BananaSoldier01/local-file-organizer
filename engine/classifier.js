@@ -566,7 +566,8 @@ async function classifyFiles(files, config = {}) {
           if (results[idx]) {
             results[idx].contentTheme = group.theme;
             results[idx].suggestedTarget = group.theme;
-            results[idx].confidence = Math.max(results[idx].confidence, group.confidence || 0.7);
+            // groupConfidence 与 suggestionConfidence 解耦，不覆盖原置信度
+            results[idx].groupConfidence = group.confidence || 0.7;
           }
         }
       }

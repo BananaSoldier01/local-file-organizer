@@ -61,9 +61,9 @@ function saveHistory() {
     }
 
     if (totalEntries > MAX_HISTORY_ENTRIES) {
-      // 移除最旧的会话
+      // 数组按最新在前排列（unshift），移除末尾即最旧会话
       while (totalEntries > MAX_HISTORY_ENTRIES && historyCache.sessions.length > 0) {
-        const removed = historyCache.sessions.shift();
+        const removed = historyCache.sessions.pop();
         totalEntries -= removed.moves.length;
       }
     }
