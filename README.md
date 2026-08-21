@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.4.1 · Semantic Classification Layer · 个人测试项目。
+> V0.4.1.1 · Content Contract & Evaluation Integrity · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -126,10 +126,19 @@ node server.js
 - **Content Summary 层**：`engine/content-summary.js`，统一数据结构 `{ title, summary, keywords, entities, confidence, method }`
 - **Summary 生成策略**：Phase 1 本地规则（Markdown 标题 / JSON 键 / CSV 表头 / 纯文本关键词），Phase 2 LLM 接口预留
 - **Classifier 重构**：输入从 `textPreview` 升级为 `contentSummary`，分类依据拆分为 `metadataEvidence` + `contentEvidenceDetail` + `finalReason`
-- **Content Extractor 缓存**：Key = `filePath + mtime + size`，避免重复读取相同文件；mtime 变化自动失效
-- **Ambiguous Filename Dataset**：新增模糊文件名测试集（新建文档.txt / 最终版.md / 资料1.json / 附件.csv / test.py / IMG_20260820.pdf）
-- **评估结果**：Metadata-only 0/6 → Content Summary 1/6，提升 1 个文件
-- **测试总数**：126/126 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 27）
+- **Ambiguous Filename Dataset**：模糊文件名测试集（新建文档.txt / 最终版.md / 资料1.json / 附件.csv / test.py / IMG_20260820.pdf）
+- **测试总数**：175/175 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 31）
+
+## V0.4.1.1 变化（Content Contract & Evaluation Integrity）
+
+核心目标：修复 FileEntry Contract Drift，让 Evaluation 走真实生产 Pipeline。
+
+- **统一 FileEntry Contract**：Scanner 产出 `extension = "txt"`（不带点），Extractor 自动 normalize 为 `.txt`；全项目不允许不同模块自行猜格式
+- **Cache 使用真实文件状态**：Key 从 `filePath + mtime + size` 改为 `filePath + modified + size`，与 Scanner 产出的 `stat.mtimeMs` 对齐
+- **Evaluation 走真实 Pipeline**：`test/evaluation.js` 直接调用 `classifyBatch(contentAware=false/true)` 对比，禁止复制分类算法
+- **Confidence 拆分**：`summaryConfidence`（Summary 质量）与 `suggestionConfidence`（移动建议置信度）语义分离，不再 Math.max() 混合
+- **Evaluation 进入 CI**：`npm test` 包含 evaluation，Semantic Regression 失败 = CI 失败
+- **测试总数**：175/175 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 31）
 
 ## V0.3.4 变化（Plan Integrity & Interaction Consistency）
 

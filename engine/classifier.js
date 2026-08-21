@@ -760,10 +760,11 @@ function applyContentSummary(result, summary) {
     contentEvidence.push(`发现关键词: ${summary.keywords.slice(0, 5).join(', ')}`);
   }
 
-  // 用 Content Summary 提升分类
-  if (summary.confidence > result.confidence) {
-    result.confidence = summary.confidence;
-  }
+  // V0.4.1.1: 拆分 Confidence —— summaryConfidence 不允许直接抬高 suggestionConfidence
+  // summary.confidence 表示"Summary 质量多可靠"（标题清晰度、关键词匹配度等）
+  // result.confidence 表示"多确定应该按这个建议移动文件"
+  // 两者语义不同，不能 Math.max() 混合
+  result.summaryConfidence = summary.confidence;
 
   // 如果内容推断了主题且当前是默认，使用内容主题
   if (summary.title && result.contentTheme === '默认') {
@@ -774,6 +775,8 @@ function applyContentSummary(result, summary) {
           result.contentTheme = theme;
           result.suggestedTarget = theme;
           result.method = result.method + '+content-summary';
+          // V0.4.1.1: 只有在内容真正匹配到主题时才提升 suggestionConfidence
+          // 权重来自 THEME_PATTERNS 匹配，不是来自 summaryConfidence
           result.confidence = Math.max(result.confidence, weight);
           break;
         }

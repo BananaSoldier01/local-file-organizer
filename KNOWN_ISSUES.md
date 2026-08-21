@@ -234,5 +234,31 @@
 
 ---
 
+### K-018：FileEntry Contract Drift（已修复）
+
+**描述**：V0.4.1 发现 Scanner 产出 `extension = "txt"`（不带点），但 Content Extractor 的 `SUPPORTED_EXTENSIONS` 存的是 `".txt"`（带点），导致所有真实文件被标记为 `unsupported_format`。同时 Cache Key 使用了不存在的 `file.mtime` 字段（Scanner 产出的是 `file.modified`）。
+
+**影响**：生产环境中 Content Extractor 对所有文件返回 `skip`，Content-Aware Classification 实际未生效。Evaluation 因为使用了不同的 FileEntry 构造方式（`extension: path.extname(name)` 带点），所以未发现此问题。
+
+**当前状态**：已修复（V0.4.1.1）。Extractor 入口 normalize extension，Cache Key 改用 `file.modified`。
+
+**根因**：跨层 Contract Drift — Scanner / Classifier / Extractor / Cache 对同一字段的理解不一致。
+
+**后续建议**：在 `engine/scanner.js` 中为 FileEntry 添加 JSDoc 注释，明确各字段格式。
+
+---
+
+### K-019：Evaluation 曾复制生产逻辑（已修复）
+
+**描述**：V0.4.1 的 `test/evaluation.js` 重新实现了一套 build summary / build evidence / 提高 confidence / theme pattern matching 逻辑，而不是调用真实的 `classifyBatch()`。生产实现 A 和测试实现 A' 分离，A 改了 A' 不改，测试照样绿。
+
+**影响**：27/27 只能证明 Evaluation 代码按自己的规则工作，不能证明真实应用的 Content-Aware Classification 工作。
+
+**当前状态**：已修复（V0.4.1.1）。Evaluation 直接调用 `classifyBatch(contentAware=false/true)` 对比。
+
+**后续建议**：所有测试应尽量走生产 Pipeline，避免在测试中复制业务逻辑。
+
+---
+
 > 本文档与 `ROADMAP.md`、`DECISIONS.md` 配合使用，三份文档共同构成项目的长期知识库。
 > 每轮开发后更新对应文档，确保上下文不丢失。

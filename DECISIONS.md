@@ -557,20 +557,99 @@ extract(file) → {
 
 ---
 
-## D-026：V0.4.1 — Content Extractor 缓存
+## D-027：V0.4.1.1 — FileEntry Contract 统一
 
-**决策**：Content Extractor 增加内存缓存，Key = `filePath + mtime + size`。
+**决策**：正式规定 FileEntry 的 `extension` 字段不带点（如 `"txt"` 而非 `".txt"`），由 Scanner 唯一产出，各消费模块自行 normalize。
 
 **理由**：
 
-- 同一文件在 Scan → Exclude → Restore → 重新 Plan 过程中可能被多次读取
-- 缓存避免重复 I/O，提升性能
-- mtime 确保文件修改后缓存自动失效
-- 缓存大小限制 200 条，避免内存泄漏
+- Scanner 产出 `extension: path.extname(name).toLowerCase().slice(1)` → `"txt"`
+- Classifier 通过 `'.' + file.extension` → `".txt"`，契约一致
+- Content Extractor 原来直接使用 `file.extension` 做 Set 查找，未加点 → `"txt"` 不在 `SUPPORTED_EXTENSIONS`（存的是 `".txt"`）中，导致所有真实文件被跳过
+- 这是典型的跨层 Contract Drift：Scanner / Classifier / Extractor 对同一字段的理解不一致
+
+**修复**：
+
+- Extractor 在入口处 normalize：`ext = ext.startsWith('.') ? ext : '.' + ext`
+- 全项目不允许不同模块自行猜格式
 
 **Trade-off**：
 
-- 缓存存储在内存中，服务器重启后丢失
-- 极端情况下（mtime 相同但内容不同），缓存可能返回过期结果（概率极低）
+- 增加了 Extractor 入口的 normalize 代码
+- 如果未来 Scanner 改了契约，Extractor 仍能通过 normalize 保持兼容
 
-**状态**：V0.4.1 已实施。
+**状态**：V0.4.1.1 已实施。
+
+---
+
+## D-028：V0.4.1.1 — Cache Key 使用真实文件状态
+
+**决策**：Cache Key 从 `filePath + mtime + size` 改为 `filePath + modified + size`。
+
+**理由**：
+
+- Scanner 产出的 FileEntry 使用 `modified: stat.mtimeMs`，没有 `mtime` 字段
+- 原 Cache Key 中 `file.mtime` 始终为 `0`（undefined → 0），导致缓存失效条件形同虚设
+- 同一文件修改后（即使 size 不变），缓存不会失效
+
+**修复**：
+
+- `getCacheKey()` 使用 `file.modified || 0` 替代 `file.mtime || 0`
+- 与 Scanner 产出的 `stat.mtimeMs` 对齐
+
+**Trade-off**：
+
+- 如果未来 FileEntry 增加/重命名字段，Cache Key 需要同步更新
+
+**状态**：V0.4.1.1 已实施。
+
+---
+
+## D-029：V0.4.1.1 — Confidence 语义拆分
+
+**决策**：`summaryConfidence`（Summary 质量）与 `suggestionConfidence`（移动建议置信度）语义分离，不允许 `Math.max()` 混合。
+
+**理由**：
+
+- `summary.confidence` 表示"Summary 质量多可靠"（标题清晰度、关键词匹配度等）
+- `result.confidence` 表示"多确定应该按这个建议移动文件"
+- 两者语义完全不同：一个 Markdown 有清晰标题（summaryConfidence = 0.9），但标题可能是"随便记一点东西"，仍然不知道该移到哪个目录
+- V0.3 已经修过 `groupConfidence` 不能抬高 `suggestionConfidence`，这是同一类问题
+
+**修复**：
+
+- 增加 `result.summaryConfidence` 字段存储 Summary 质量
+- `result.confidence`（suggestionConfidence）仅在内容真正匹配到主题时才提升
+- 权重来自 `THEME_PATTERNS` 匹配，不是来自 `summaryConfidence`
+
+**Trade-off**：
+
+- 增加了一个新字段
+- 调用方需要理解两个 Confidence 的区别
+
+**状态**：V0.4.1.1 已实施。
+
+---
+
+## D-030：V0.4.1.1 — Evaluation 走真实 Pipeline
+
+**决策**：`test/evaluation.js` 直接调用 `classifyBatch(contentAware=false/true)` 对比，禁止在测试中复制分类算法。
+
+**理由**：
+
+- V0.4.1 的 Evaluation 复制了一套 build summary / build evidence / 提高 confidence / theme pattern matching 逻辑
+- 生产实现 A 和测试实现 A' 分离，A 改了 A' 不改，测试照样绿
+- 27/27 只能证明 Evaluation 代码按自己的规则工作，不能证明真实应用的 Content-Aware Classification 工作
+
+**修复**：
+
+- Evaluation 直接调用 `classifier.classifyBatch(realEntries, { contentAware: false/true })`
+- 使用真实 FileEntry Contract（extension 不带点、modified 而非 mtime）
+- 对比两个 Pipeline 的分类结果，计算准确率
+
+**Trade-off**：
+
+- 测试更依赖生产代码的稳定性
+- 如果生产代码有 bug，Evaluation 会直接暴露
+
+**状态**：V0.4.1.1 已实施。

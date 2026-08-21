@@ -28,9 +28,10 @@ const contentCache = new Map();
 const MAX_CACHE_SIZE = 200;
 
 function getCacheKey(file) {
-  // 使用文件路径 + mtime + size 作为缓存键
-  // mtime 确保文件修改后缓存失效
-  return file.path + '|' + (file.mtime || 0) + '|' + (file.size || 0);
+  // V0.4.1.1: 使用文件路径 + modified + size 作为缓存键
+  // Scanner 产出的是 modified（stat.mtimeMs），不是 mtime
+  // modified 确保文件修改后缓存失效
+  return file.path + '|' + (file.modified || 0) + '|' + (file.size || 0);
 }
 
 function getFromCache(file) {
@@ -116,7 +117,10 @@ function extract(file) {
   if (cached) return cached;
 
   const filePath = file.path;
-  const ext = (file.extension || '').toLowerCase();
+  // V0.4.1.1: 统一 FileEntry Contract — Scanner 产出 extension 不带点（如 "txt"），
+  // 这里 normalize 为 ".txt" 保证与 SUPPORTED_EXTENSIONS 一致
+  let ext = (file.extension || '').toLowerCase();
+  if (ext && !ext.startsWith('.')) ext = '.' + ext;
   const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
 
   // ── 1. 资源限制检查 ──

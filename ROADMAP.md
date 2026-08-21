@@ -1,10 +1,10 @@
 # ROADMAP
 
-> 最后更新：V0.4.1
+> 最后更新：V0.4.1.1
 
 ---
 
-## 当前阶段：V0.4.1 — Semantic Classification Layer 🔄
+## 当前阶段：V0.4.1.1 — Content Contract & Evaluation Integrity 🔄
 
 V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
 
@@ -73,6 +73,27 @@ V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revisio
 - [x] 不发送完整文件内容
 - [x] 失败自动降级到 metadata-only
 - [x] 全部回归测试通过
+
+---
+
+## 当前阶段：V0.4.1.1 — Content Contract & Evaluation Integrity 🔄
+
+### V0.4.1.1 完成项
+
+- 统一 FileEntry Contract：Scanner 产出 `extension = "txt"`（不带点），Extractor 自动 normalize
+- Cache Key 修正：`filePath + modified + size`（原 `mtime` 不存在于 Scanner 产出）
+- Evaluation 走真实 Pipeline：直接调用 `classifyBatch(contentAware=false/true)` 对比
+- Confidence 拆分：`summaryConfidence` 与 `suggestionConfidence` 语义分离
+- Evaluation 进入 `npm test` / CI Gate
+
+### V0.4.1.1 验收标准
+
+- [x] 统一 FileEntry Contract，全项目不允许不同模块自行猜格式
+- [x] Cache 使用真实文件状态（modified 替代 mtime）
+- [x] Evaluation 走真实 classifyBatch 生产 Pipeline
+- [x] 拆分 summaryConfidence / suggestionConfidence
+- [x] Evaluation 进入 npm test / CI
+- [x] 全部回归测试通过（175/175）
 
 V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
 
