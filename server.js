@@ -174,6 +174,9 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/settings' && req.method === 'POST') {
     return await handleSaveSettings(req, res);
   }
+  if (pathname === '/api/relationship' && req.method === 'POST') {
+    return await handleRelationship(req, res);
+  }
   fail(res, 404, 'Not found');
 }
 
@@ -1014,6 +1017,25 @@ async function handleSaveSettings(req, res) {
 
     saveSettings(body);
     ok(res, {});
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── 文件关系分析 ──────────────────────────────────────────
+async function handleRelationship(req, res) {
+  try {
+    const body = await readBody(req);
+    const { files, config } = body;
+    if (!files || !Array.isArray(files)) {
+      return fail(res, 400, '缺少 files 数组');
+    }
+
+    const relationship = require('./engine/relationship');
+    const result = relationship.buildRelationshipGraph(files, {
+      minScore: (config && config.minScore) || 0.3,
+      maxPairs: (config && config.maxPairs) || 5000,
+    });
+    const report = relationship.generateReport(result);
+    ok(res, report);
   } catch (err) { fail(res, 500, err.message); }
 }
 

@@ -1,10 +1,10 @@
 # ROADMAP
 
-> 最后更新：V0.4.1.1
+> 最后更新：V0.4.2
 
 ---
 
-## 当前阶段：V0.4.1.1 — Content Contract & Evaluation Integrity 🔄
+## 当前阶段：V0.4.2 — File Relationship Intelligence 🔄
 
 V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
 
@@ -94,6 +94,41 @@ V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revisio
 - [x] 拆分 summaryConfidence / suggestionConfidence
 - [x] Evaluation 进入 npm test / CI
 - [x] 全部回归测试通过（175/175）
+
+---
+
+## 当前阶段：V0.4.2 — File Relationship Intelligence 🔄
+
+V0.4.2 从「单文件分类」升级为「文件关系智能」——理解文件之间的关系，而不只是单个文件。
+
+### V0.4.2 完成项
+
+- Semantic Fingerprint（`engine/fingerprint.js`）：基于 Content Summary + Classification Result 生成语义指纹
+- File Similarity Engine（`engine/similarity.js`）：多维度相似度计算（主题/关键词/实体/路径/文件名），可解释证据
+- Relationship Graph（`engine/relationship.js`）：候选过滤 → 相似度计算 → 连通分量分组 → 分组建议
+- Relationship Evaluation（`test/relationship.js`）：9 个测试场景，39 项检查
+- 候选过滤性能优化：100 文件从 4950 对降至 2450 对（减少 50%）
+
+### V0.4.2 验收标准
+
+- [x] 语义指纹从已有 Content Summary 派生，不重复读取文件
+- [x] 相似度计算可解释（每条边有 evidence 数组）
+- [x] 候选过滤避免全量 N² 比较
+- [x] 关系分组基于连通分量
+- [x] 分组建议包含理由和置信度
+- [x] 关系报告可 JSON 序列化
+- [x] 空输入 / 单文件边界处理
+- [x] 全部回归测试通过（218/218）
+
+### V0.4.2 明确不做
+
+- 不做 DOCX/PDF/PPTX/XLSX 解析
+- 不做 LLM 集成
+- 不做自动移动文件
+- 不做 UI 重构
+- 不做向量数据库
+
+---
 
 V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
 
