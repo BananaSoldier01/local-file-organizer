@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.2 · Correctness & Safety · 个人测试项目。
+> V0.3.3 · 基础设施整改 · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -22,7 +22,7 @@
 
 ## 分类模型
 
-不同于传统的单层分类，V0.2 使用多维模型：
+不同于传统的单层分类，本项目使用多维模型：
 
 | 维度 | 说明 | 示例 |
 |------|------|------|
@@ -75,6 +75,16 @@ node server.js
 - 原生 fs 模块
 - 纯 HTML/CSS/JS（无框架）
 
+## V0.3.3 变化（基础设施整改）
+
+- **受信 plan 链路**：`scanId → planId → sourceRoot` 服务端映射，客户端无法绕过
+- **路径安全**：`realpath` + `path.relative` 前缀碰撞防护，拒绝 `../` 逃逸、符号链接逃逸、源文件在 root 外
+- **统一取消协议**：Classify / Execute 取消统一使用 `{ id }` body 协议
+- **撤销语义修复**：`undoMoves` 返回 `fullyReverted` / `partially_reverted` / `partial` / `failed` 四态
+- **groupConfidence 解耦**：分组置信度与建议置信度分离，不再互相覆盖
+- **历史清理 bug 修复**：`saveHistory` 数组最新在前，清理时用 `pop()` 删最旧记录（原 `shift()` 误删最新记录）
+- **集成测试**：`npm run test:integration` 43/43 通过，覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
+
 ## V0.3.2 变化（Correctness & Safety）
 
 - **Scan 真实进度**：修复 `countDirs` 未调用导致 `totalDirs=0`，现在显示真实目录遍历进度
@@ -86,7 +96,7 @@ node server.js
 - **AI 隐私全面脱敏**：fileList / context.dirs / project grouping 均不发送绝对路径
 - **Execute Job 类型修复**：`failedCount`/`skippedCount`（数值）与 `failed[]`/`skipped[]`（数组）分离
 - **API Key 防覆盖**：`maskSettings` 始终删除 `apiKey` 字段，GET 只返回 `apiKeyConfigured`/`apiKeyPreview`
-- **集成测试**：`npm run test:integration` 30/30 通过，覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
+- **集成测试**：`npm run test:integration` 43/43 通过（V0.3.3 基础设施整改后），覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
 
 ## V0.3.1 变化（Release Hardening）
 
