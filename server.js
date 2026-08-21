@@ -132,22 +132,16 @@ async function handleAPI(req, res, parsedUrl) {
   }
   // 测试专用：安全检查端点（仅开发模式）
   if (pathname === '/api/test-security' && req.method === 'POST') {
+    if (process.env.NODE_ENV !== 'test') {
+      return fail(res, 404, 'Not found');
+    }
     return handleTestSecurity(req, res);
-  }
-  if (pathname === '/api/pick-folder' && req.method === 'POST') {
-    return await handlePickFolder(req, res);
   }
   if (pathname === '/api/classify' && req.method === 'POST') {
     return await handleClassify(req, res);
   }
-  if (pathname === '/api/classify-progress' && req.method === 'GET') {
-    return handleClassifyProgress(req, res);
-  }
-  if (pathname === '/api/classify-result' && req.method === 'GET') {
-    return handleClassifyResult(req, res);
-  }
-  if (pathname === '/api/classify-cancel' && req.method === 'POST') {
-    return handleClassifyCancel(req, res);
+  if (pathname === '/api/pick-folder' && req.method === 'POST') {
+    return await handlePickFolder(req, res);
   }
   if (pathname === '/api/plan' && req.method === 'POST') {
     return await handlePlan(req, res);
@@ -215,6 +209,31 @@ function cleanupJob(map, id, delayMs = 30000) {
 
 function cleanupStore(store, id, delayMs) {
   setTimeout(() => store.delete(id), delayMs);
+}
+
+// ── Session 生命周期（idle TTL + touch）───────────────────────
+// 替代固定 120s 创建即过期的策略。
+// 用户 Review 期间每次有效操作 touch()，超过 IDLE_TTL 无操作才清理。
+const SESSION_IDLE_TTL = 30 * 60 * 1000; // 30 分钟 idle
+
+function touchStore(store, id) {
+  const entry = store.get(id);
+  if (entry) {
+    entry.lastTouch = Date.now();
+    // 刷新自动清理定时器
+    if (entry._cleanupTimer) {
+      clearTimeout(entry._cleanupTimer);
+    }
+    entry._cleanupTimer = setTimeout(() => store.delete(id), SESSION_IDLE_TTL);
+  }
+}
+
+function isStoreExpired(store, id) {
+  const entry = store.get(id);
+  if (!entry) return true;
+  // 如果没有 lastTouch（旧数据），用 createdAt 兜底
+  const lastActivity = entry.lastTouch || entry.createdAt;
+  return (Date.now() - lastActivity) > SESSION_IDLE_TTL;
 }
 
 // ── 路径安全工具 ────────────────────────────────────────────
@@ -386,10 +405,15 @@ function pollJob(type, id) {
 function createScanJob(rootPath, options) {
   const scanId = 'scan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
-  // 存储可信 sourceRoot
+  // 存储可信 sourceRoot + 文件路径集合（用于 Plan 文件归属验证）
   const canonicalRoot = canonicalizeExistingPath(rootPath);
-  scanRootStore.set(scanId, { sourceRoot: canonicalRoot, createdAt: Date.now() });
-  cleanupStore(scanRootStore, scanId, 120000);
+  const entry = {
+    sourceRoot: canonicalRoot,
+    createdAt: Date.now(),
+    lastTouch: Date.now(),
+  };
+  scanRootStore.set(scanId, entry);
+  entry._cleanupTimer = setTimeout(() => scanRootStore.delete(scanId), SESSION_IDLE_TTL);
 
   const job = {
     scanId,
@@ -429,6 +453,15 @@ function createScanJob(rootPath, options) {
       job.result = result;
       job.files = result.files.length;
       job.dirs = result.stats?.totalDirs || 0;
+
+      // 将扫描到的文件路径集合存入 scanRootStore，用于 Plan 文件归属验证
+      const scanEntry = scanRootStore.get(scanId);
+      if (scanEntry) {
+        scanEntry.fileSet = new Set(result.files.map(f => {
+          try { return fs.realpathSync(f.path); }
+          catch (_) { return f.path; }
+        }));
+      }
 
       cleanupJob(jobMaps.scan, scanId);
     } catch (err) {
@@ -582,6 +615,10 @@ function createClassifyJob(files, config) {
           job.failedBatches++;
         }
         job.processedFiles = Math.min(files.length, (bi + 1) * BATCH_SIZE);
+        // 小延迟使取消操作有时间生效
+        if (bi < batches.length - 1) {
+          await new Promise(r => setTimeout(r, 200));
+        }
       }
 
       if (job.status !== 'cancelled') {
@@ -656,20 +693,11 @@ function handleClassifyResult(req, res) {
   ok(res, result);
 }
 
-function handleClassifyResult(req, res) {
-  const classifyId = url.parse(req.url, true).query.classifyId;
-  const job = jobMaps.classify.get(classifyId);
-  if (!job) return fail(res, 404, '分类任务不存在');
-  if (job.status !== 'completed' && job.status !== 'partial') {
-    return fail(res, 400, '分类未完成，当前状态: ' + job.status);
-  }
-  ok(res, job.results);
-}
-
-function handleClassifyCancel(req, res) {
+async function handleClassifyCancel(req, res) {
   // 统一协议：POST /api/classify-cancel body: { id }
-  const body = req.body || {};
-  const classifyId = body.id || url.parse(req.url, true).query.classifyId;
+  const body = await readBody(req);
+  const classifyId = body.id;
+  if (!classifyId) return fail(res, 400, '缺少 classifyId');
   const job = jobMaps.classify.get(classifyId);
   if (!job) return fail(res, 404, '分类任务不存在');
   if (job.status === 'running' || job.status === 'grouping') {
@@ -686,31 +714,58 @@ async function handlePlan(req, res) {
     const { files, options, scanId } = body;
     if (!files) return fail(res, 400, '缺少 files');
 
-    // 从 scanId 获取可信 sourceRoot
-    let sourceRoot = null;
-    if (scanId) {
-      const scanRoot = scanRootStore.get(scanId);
-      if (scanRoot) {
-        sourceRoot = scanRoot.sourceRoot;
-      } else {
-        return fail(res, 404, 'scanId 不存在或已过期');
+    // 必须携带有效 scanId，否则拒绝生成可执行 Plan
+    if (!scanId) {
+      return fail(res, 400, '缺少 scanId：生成整理方案必须关联一次扫描');
+    }
+
+    const scanEntry = scanRootStore.get(scanId);
+    if (!scanEntry) {
+      return fail(res, 404, 'scanId 不存在或已过期');
+    }
+    if (isStoreExpired(scanRootStore, scanId)) {
+      scanRootStore.delete(scanId);
+      return fail(res, 404, 'scanId 已过期，请重新扫描');
+    }
+
+    // 验证所有请求文件属于本次 Scan Session
+    if (scanEntry.fileSet) {
+      const foreignFiles = [];
+      for (const f of files) {
+        let canonical;
+        try {
+          canonical = fs.realpathSync(f.path);
+        } catch (_) { canonical = f.path; }
+        if (!scanEntry.fileSet.has(canonical)) {
+          foreignFiles.push(f.path);
+        }
+      }
+      if (foreignFiles.length > 0) {
+        return fail(res, 403, `以下文件不属于本次扫描结果，拒绝注入: ${foreignFiles.slice(0, 3).join(', ')}`);
       }
     }
+
+    const sourceRoot = scanEntry.sourceRoot;
+
+    // touch scan session
+    touchStore(scanRootStore, scanId);
 
     const plan = organizer.generatePlan(files, options);
     const validation = organizer.validatePlan(plan);
 
     // 存储受信任的 plan
     const planId = 'plan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    planStore.set(planId, {
+    const planEntry = {
       planId,
-      scanId: scanId || null,
+      scanId,
       sourceRoot,
       moves: plan.moves,
       targetRoot: plan.targetRoot,
       createdAt: Date.now(),
-    });
-    cleanupStore(planStore, planId, 120000);
+      lastTouch: Date.now(),
+    };
+    planStore.set(planId, planEntry);
+    planEntry._cleanupTimer = setTimeout(() => planStore.delete(planId), SESSION_IDLE_TTL);
 
     ok(res, { ...plan, validation, planId });
   } catch (err) { fail(res, 500, err.message); }
@@ -831,6 +886,13 @@ async function handleExecute(req, res) {
     if (!stored) {
       return fail(res, 404, 'planId 不存在或已过期');
     }
+    if (isStoreExpired(planStore, planId)) {
+      planStore.delete(planId);
+      return fail(res, 404, 'planId 已过期，请重新生成方案');
+    }
+
+    // touch plan session
+    touchStore(planStore, planId);
 
     const plan = { moves: stored.moves, targetRoot: stored.targetRoot };
     const sourceRoot = stored.sourceRoot;

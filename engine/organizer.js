@@ -60,6 +60,9 @@ function generatePlan(classifiedFiles, options = {}) {
     let targetDir;
     if (flatten) {
       targetDir = path.join(rootDir || file.dir, targetDirName);
+    } else if (targetRoot) {
+      // 用户明确指定 targetRoot 时，目标必须基于 targetRoot
+      targetDir = path.join(targetRoot, targetDirName);
     } else {
       targetDir = path.join(file.dir, targetDirName);
     }
@@ -144,7 +147,17 @@ function findCommonParent(dirs) {
 
 function validatePlan(plan) {
   const issues = [];
+  const fs = require('fs');
   for (const move of plan.moves) {
+    // circular 检查仅对源是目录时有意义（目录不能移动到自身子目录）
+    // 对普通文件 move（file → another file path），不存在目录循环语义
+    let sourceIsDir = false;
+    try {
+      sourceIsDir = fs.statSync(move.from).isDirectory();
+    } catch (_) { /* 文件不存在，跳过 */ }
+
+    if (!sourceIsDir) continue;
+
     const sourceDir = path.dirname(move.from);
     if (move.to.startsWith(sourceDir + path.sep) || move.to === sourceDir) {
       issues.push({

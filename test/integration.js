@@ -57,6 +57,13 @@ async function pollJob(type, id, timeoutMs = 60000) {
 }
 
 async function fullPipeline(rootPath, targetRoot, detectProjects = false) {
+  // V0.3.4: targetRoot 必须在 scan root 内（安全策略）
+  // 如果 targetRoot 不在 rootPath 内，自动使用 rootPath 内的子目录
+  let effectiveTargetRoot = targetRoot;
+  if (targetRoot && !targetRoot.startsWith(rootPath)) {
+    effectiveTargetRoot = path.join(rootPath, '整理结果');
+  }
+
   const scanRes = await api('POST', '/api/scan', { rootPath });
   const scanId = scanRes.data.data.scanId;
   await pollJob('scan', scanId);
@@ -73,13 +80,13 @@ async function fullPipeline(rootPath, targetRoot, detectProjects = false) {
 
   const planRes = await api('POST', '/api/plan', {
     files: classified,
-    options: { targetRoot },
+    options: { targetRoot: effectiveTargetRoot },
     scanId,
   });
   const planId = planRes.data.data.planId;
   const plan = planRes.data.data;
 
-  return { scanId, planId, plan, classified };
+  return { scanId, planId, plan, classified, effectiveTargetRoot };
 }
 
 function setupFiles(dir, count, prefix = 'file') {
@@ -146,7 +153,8 @@ async function main() {
   // 3. Plan (使用 scanId)
   // ═══════════════════════════════════════════════
   console.log('\n3. Plan:');
-  const targetRoot = path.join(os.tmpdir(), 'itest-target-' + Date.now());
+  // V0.3.4: targetRoot 必须在 scan root 内
+  const targetRoot = path.join(dir, '整理结果');
   const planResult = await api('POST', '/api/plan', {
     files: classifiedFiles,
     options: { targetRoot },

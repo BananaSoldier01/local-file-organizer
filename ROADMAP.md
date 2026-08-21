@@ -4,9 +4,9 @@
 
 ---
 
-## 当前阶段：V0.3.x — 基础设施整改
+## 当前阶段：V0.3.4 — Plan Integrity & Interaction Consistency
 
-V0.3.x 系列聚焦于让安全、执行、取消、项目分组和测试结果真正可信。核心原则：**不要再写"看起来实现了"的功能，每一个能力必须做到 UI → API → Job/Engine → File System → Result → UI feedback 完整闭环。**
+V0.3.4 聚焦于建立唯一、可信的 **Scan Session → User Review → Trusted Plan → Execute** 链路。核心原则：**What you review is exactly what gets executed.**
 
 ### V0.3.1 — Release Hardening ✅
 
@@ -31,6 +31,21 @@ V0.3.x 系列聚焦于让安全、执行、取消、项目分组和测试结果�
 - Execute Job 类型修复（failedCount/skippedCount 与 failed[]/skipped[] 分离）
 - API Key 防覆盖（maskSettings 始终删除 apiKey 字段）
 - 集成测试 30/30 通过
+
+### V0.3.4 — Plan Integrity & Interaction Consistency ✅
+
+- Trusted Plan 生命周期（state.scanId / state.planId 完整生命周期）
+- regeneratePlan 原子更新（始终携带 scanId，plan+planId 同时替换）
+- Exclusion 进入 Trusted Plan（排除/恢复自动触发 regeneratePlan）
+- Execute Consistency Guard（planDirty / regenerating 状态锁）
+- `/api/plan` 强制 scanId（无 scanId → 400，不存在 → 404）
+- 文件归属验证（scanRootStore.fileSet 拒绝外部注入）
+- Session 生命周期改为 30min idle TTL + touch()
+- Classify Cancel 协议修复（readBody 读取 { id }）
+- Target Root 语义统一（所有目标在 Scan Root 内）
+- validatePlan circular 误报修复
+- Undo 状态贯通 History/UI
+- 场景测试 29/29 通过
 
 ### V0.3.3 — 基础设施整改 ✅
 

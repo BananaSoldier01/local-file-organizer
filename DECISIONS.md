@@ -214,3 +214,79 @@
 - 无自动发布流程
 
 **状态**：列入 V0.3.4 待办。需要先解决测试服务器生命周期管理问题。
+
+---
+
+## D-011：Trusted Plan 必须绑定 scanId
+
+**决策**：`POST /api/plan` 必须携带有效 `scanId`，否则返回 400（无 scanId）或 404（scanId 不存在/已过期）。不允许创建 `sourceRoot = null` 但仍可 Execute 的 Plan。
+
+**理由**：
+
+- Trusted Plan 的安全意义在于：客户端无法绕过服务端验证
+- 如果允许无 scanId 创建 Plan，客户端可以提交任意 `files` + `targetRoot`，绕过 Scan Session 的文件归属验证
+- `scanId` 是连接「用户看到的文件」与「服务端信任的文件集合」的唯一纽带
+
+**Trade-off**：
+
+- 增加了 API 调用复杂度（前端必须在请求 Plan 时携带 scanId）
+- 前端需要管理 scanId 生命周期（state.scanId）
+
+**状态**：V0.3.4 已实施，长期保持。
+
+---
+
+## D-012：Target Root 限制在 Scan Root 内
+
+**决策**：V0.3.4 暂时规定所有整理目标必须位于当前 Scan Root 内。允许用户指定 Scan Root 内的子目录（如 `Downloads/整理结果`），但不允许跨 Root 整理（如 `Downloads → /Users/me/Documents`）。
+
+**理由**：
+
+- 路径安全验证（`checkMoveSafety`）天然要求 target 在 canonical root 内
+- 跨 Root 整理需要独立的 `trustedAllowedTargetRoot` 机制，当前未实现
+- 产品层面，用户通常希望在同一文件夹内整理，而非移动到外部目录
+
+**Trade-off**：
+
+- 限制了部分高级使用场景（如"整理到另一个文件夹"）
+- 未来如需支持，应通过 Folder Picker 建立可信目标根目录，而非信任用户输入的任意路径
+
+**状态**：V0.3.4 已实施。跨 Root 整理列入 V0.4 评估。
+
+---
+
+## D-013：Session 生命周期采用 Idle TTL + Touch
+
+**决策**：Scan Session 和 Plan Session 的过期策略从「固定 120s 创建即过期」改为「30 分钟 idle TTL + 每次有效操作 touch() 刷新」。
+
+**理由**：
+
+- 固定 120s 不适合真实用户：扫描大量文件 + 等待 AI + Review 数分钟 + 中途停顿，都可能超过 120s
+- Idle TTL 更符合用户行为：用户停止操作后才清理，而非创建后固定时间
+- `touch()` 机制简单可靠：每次 `/api/plan`（生成/重新生成）和 `/api/execute`（执行）都刷新
+
+**Trade-off**：
+
+- 内存中未清理的 Session 会占用更多内存（30min × 多个 Session）
+- 测试时需要等待 30min 或注入短 TTL（当前测试直接调用 API，不等待过期）
+
+**状态**：V0.3.4 已实施。`SESSION_IDLE_TTL = 30 * 60 * 1000`。
+
+---
+
+## D-014：Undo 状态四态贯通 History / UI
+
+**决策**：`undoMoves` 返回的 `status`（`fully_reverted` / `partially_reverted` / `partial` / `failed`）必须保存到 History 的 `undoStatus` / `undoConflictCount` / `undoneAt` 字段，UI 必须区分展示。只有 `fully_reverted` 才等价于"完全撤销"。
+
+**理由**：
+
+- V0.3.3 之前 History 只用 `result.failed === 0` 判断是否撤销成功，丢失了 conflict 语义
+- 用户需要知道撤销是"完全恢复"还是"部分恢复（有冲突）"
+- `undone` 布尔字段仅作为 `fully_reverted` 的快捷判断，不替代详细状态
+
+**Trade-off**：
+
+- 增加了 History 的存储字段
+- UI 需要处理更多状态标签
+
+**状态**：V0.3.4 已实施。

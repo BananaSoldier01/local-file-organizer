@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.3 · 基础设施整改 · 个人测试项目。
+> V0.3.4 · Plan Integrity & Interaction Consistency · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -75,6 +75,23 @@ node server.js
 - 原生 fs 模块
 - 纯 HTML/CSS/JS（无框架）
 
+## V0.3.4 变化（Plan Integrity & Interaction Consistency）
+
+核心原则：**What you review is exactly what gets executed.**
+
+- **Trusted Plan 生命周期**：`state.scanId` / `state.planId` 进入正式 state，newScan / leave workspace 时完整清理
+- **regeneratePlan 原子更新**：始终携带可信 `scanId`，`plan` + `planId` 同时替换；失败时保留上一份有效 Plan
+- **Exclusion 进入 Trusted Plan**：排除/恢复操作后自动触发 `regeneratePlan`，被排除文件从服务器 Plan 中移除
+- **Execute Consistency Guard**：`planDirty` / `regenerating` 状态锁，Plan 更新期间 Execute 按钮禁用
+- **`/api/plan` 强制 scanId**：无 `scanId` 返回 400，`scanId` 不存在/已过期返回 404
+- **文件归属验证**：服务器保留 Scan Session 的 `fileSet`，拒绝注入未扫描到的外部文件
+- **Session 生命周期**：从固定 120s 改为 30 分钟 idle TTL + `touch()` 刷新，支持用户 Review 期间长时间停顿
+- **Classify Cancel 协议修复**：`handleClassifyCancel` 改用 `readBody` 读取 `{ id }`，清理重复路由
+- **Target Root 语义统一**：所有目标必须在 Scan Root 内；Organizer 实际使用 `targetRoot` 生成目标路径
+- **validatePlan 误报修复**：circular 检查仅对源是目录时生效，不再误报普通文件整理
+- **Undo 状态贯通**：History/UI 保存 `undoStatus` / `undoConflictCount` / `undoneAt`，区分完全撤销/部分恢复/冲突/失败
+- **场景测试**：`npm run test:scenario` 29/29 通过，覆盖 Edit→Execute / Exclude→Execute / Restore→Execute / Plan Without ScanId / Foreign File Injection / Session Lifecycle / Classify Cancel / Undo Conflict
+
 ## V0.3.3 变化（基础设施整改）
 
 - **受信 plan 链路**：`scanId → planId → sourceRoot` 服务端映射，客户端无法绕过
@@ -96,7 +113,7 @@ node server.js
 - **AI 隐私全面脱敏**：fileList / context.dirs / project grouping 均不发送绝对路径
 - **Execute Job 类型修复**：`failedCount`/`skippedCount`（数值）与 `failed[]`/`skipped[]`（数组）分离
 - **API Key 防覆盖**：`maskSettings` 始终删除 `apiKey` 字段，GET 只返回 `apiKeyConfigured`/`apiKeyPreview`
-- **集成测试**：`npm run test:integration` 43/43 通过（V0.3.3 基础设施整改后），覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
+- **集成测试**：`npm run test:integration` 43/43 通过，覆盖 Scan/Classify/Plan/Execute/Cancel/Security/Undo/Settings/History
 
 ## V0.3.1 变化（Release Hardening）
 

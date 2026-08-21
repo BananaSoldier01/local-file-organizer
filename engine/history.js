@@ -151,15 +151,16 @@ async function undoLastSession(sessionId) {
 
   const result = await undoMoves(session.moves);
 
-  // 标记该会话为已撤销
-  if (result.failed === 0) {
-    const history = loadHistory();
-    const idx = history.sessions.findIndex(s => s.id === session.id);
-    if (idx >= 0) {
-      history.sessions[idx].undone = true;
-      history.sessions[idx].undoneAt = Date.now();
-      saveHistory();
-    }
+  // 保存完整撤销语义到 History
+  const history = loadHistory();
+  const idx = history.sessions.findIndex(s => s.id === session.id);
+  if (idx >= 0) {
+    history.sessions[idx].undoStatus = result.status;           // fully_reverted | partially_reverted | partial | failed
+    history.sessions[idx].undoConflictCount = result.conflictCount || 0;
+    history.sessions[idx].undoneAt = Date.now();
+    // 仅 fully_reverted 等价于"完全撤销"
+    history.sessions[idx].undone = result.status === 'fully_reverted';
+    saveHistory();
   }
 
   return result;

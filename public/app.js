@@ -102,6 +102,11 @@ const state = {
   files: [],           // 原始文件列表
   classifiedFiles: [], // 分类后的文件
   plan: null,          // 整理方案
+  scanId: null,        // 当前可信 Scan Session ID
+  planId: null,        // 当前可信 Plan ID
+  planRevision: 0,     // Plan 版本号，每次 regenerate 递增
+  planDirty: false,    // true = UI 已修改但 Plan 未重新生成
+  regenerating: false, // regeneratePlan 进行中
   currentFolder: null,
   selectedFiles: new Set(),   // 用户选中的文件（用于批量操作）
   excludedFiles: new Set(),   // 排除的文件路径（不参与整理）
@@ -359,6 +364,7 @@ async function startScan(folderPath) {
 
     const scanId = createResult.data.scanId;
     if (!scanId) throw new Error('未获取到 scanId');
+    state.scanId = scanId;
 
     // 2. 统一轮询 —— 单个 loop，无硬超时
     while (true) {
@@ -432,10 +438,12 @@ async function startScan(folderPath) {
     // 5. 生成方案（携带 scanId 获取可信 sourceRoot）
     const planResult = await API.generatePlan(state.classifiedFiles, {
       targetRoot: state.customTargetRoot,
-      scanId: scanId,
+      scanId: state.scanId,
     });
     state.plan = planResult.data;
     state.planId = planResult.data.planId;
+    state.planRevision = 1;
+    state.planDirty = false;
 
     // 6. 更新 UI
     updateSidebarStats();
@@ -540,7 +548,16 @@ function renderWorkspace() {
     .reduce((s, m) => s + (m.size || 0), 0) : 0;
 
   updateFooter(files.length, moveCount, moveSize);
-  $('btn-execute').disabled = moveCount === 0;
+  // Execute 按钮状态：有 move 且未在重新生成时才可点击
+  const canExecute = moveCount > 0 && !state.regenerating && !state.planDirty;
+  $('btn-execute').disabled = !canExecute;
+  if (state.regenerating) {
+    $('btn-execute').title = '正在更新整理方案…';
+  } else if (state.planDirty) {
+    $('btn-execute').title = '方案已修改，正在更新…';
+  } else {
+    $('btn-execute').title = '';
+  }
   updateSelectionUI();
 }
 
@@ -717,6 +734,8 @@ function excludeSelected() {
   renderWorkspace();
   updateSelectionUI();
   toast('已排除 ' + count + ' 个文件', 'success');
+  // 排除后必须重新生成可信 Plan
+  regeneratePlan();
 }
 
 function restoreExcluded() {
@@ -729,6 +748,8 @@ function restoreExcluded() {
   renderWorkspace();
   updateSelectionUI();
   toast('已恢复所有排除的文件', 'success');
+  // 恢复后必须重新生成可信 Plan
+  regeneratePlan();
 }
 
 function updateSelectionUI() {
@@ -739,13 +760,46 @@ function updateSelectionUI() {
 
 // ── 重新生成方案 ──────────────────────────────────────────
 async function regeneratePlan() {
+  if (state.regenerating) return; // 防抖：避免并发请求
+  if (!state.scanId) return;      // 无 scanId 不生成可信 Plan
+
+  state.regenerating = true;
+  state.planDirty = true;
+  // 禁用 Execute 按钮，防止用户在 Plan 更新期间执行
+  const execBtns = [$('btn-execute'), $('btn-execute-bottom')];
+  execBtns.forEach(b => { if (b) b.disabled = true; });
+
   try {
-    state.plan = (await API.generatePlan(state.classifiedFiles, {
+    // 过滤已排除文件，只将有效文件发送给服务器
+    const effectiveFiles = state.classifiedFiles.filter(f => !state.excludedFiles.has(f.path));
+    if (effectiveFiles.length === 0) {
+      state.plan = { moves: [], conflicts: [], summary: {}, targetRoot: null };
+      state.planId = null;
+      state.planRevision++;
+      state.planDirty = false;
+      renderWorkspace();
+      return;
+    }
+
+    const result = await API.generatePlan(effectiveFiles, {
       targetRoot: state.customTargetRoot,
-    })).data;
+      scanId: state.scanId,
+    });
+
+    // 原子更新：plan + planId 同时替换
+    state.plan = result.data;
+    state.planId = result.data.planId;
+    state.planRevision++;
+    state.planDirty = false;
     renderWorkspace();
   } catch (err) {
     console.warn('[plan] 重新生成失败:', err.message);
+    toast('方案更新失败，保留上一次有效方案', 'error');
+    // 保留旧 plan，不置空
+  } finally {
+    state.regenerating = false;
+    // 重新渲染以恢复 Execute 按钮状态
+    renderWorkspace();
   }
 }
 
@@ -753,9 +807,32 @@ async function regeneratePlan() {
 async function executePlan() {
   if (!state.plan) return;
 
-  const moves = state.plan.moves.filter(m => !state.excludedFiles.has(m.from));
-  if (moves.length === 0) {
+  // Plan Consistency Guard
+  if (state.planDirty) {
+    toast('方案正在更新中，请稍等…', 'warning');
+    return;
+  }
+  if (state.regenerating) {
+    toast('正在更新整理方案…', 'warning');
+    return;
+  }
+  if (!state.planId) {
+    toast('当前没有可用的可信方案', 'error');
+    return;
+  }
+
+  // 服务器 trusted plan 中的 move 数量必须与 UI 有效 move 数量一致
+  const uiMoves = state.plan.moves.filter(m => !state.excludedFiles.has(m.from));
+  if (uiMoves.length === 0) {
     toast('没有需要整理的文件', 'warning');
+    return;
+  }
+
+  // 一致性检查：UI 有效 move 数 == plan 中非排除 move 数
+  // （排除文件已在 regeneratePlan 时从服务器 plan 中移除，此处为防御性检查）
+  const serverMoves = state.plan.moves;
+  if (serverMoves.length !== state.plan.moves.length) {
+    toast('方案不一致，请重新生成', 'error');
     return;
   }
 
@@ -855,7 +932,17 @@ async function undoLast() {
   try {
     const result = await API.undo();
     if (result.success) {
-      toast(`已撤销 ${result.success} 个操作`, 'success');
+      const status = result.status || (result.failed === 0 ? 'fully_reverted' : 'partial');
+      const labels = {
+        fully_reverted: `已撤销 ${result.success} 个操作`,
+        partially_reverted: `部分恢复：${result.success} 成功，${result.conflictCount || 0} 处冲突`,
+        partial: `部分撤销：${result.success} 成功，${result.failed} 失败`,
+        failed: '撤销失败',
+      };
+      toast(labels[status] || `已撤销 ${result.success} 个操作`,
+        status === 'fully_reverted' ? 'success' :
+        status === 'partially_reverted' ? 'warning' :
+        status === 'partial' ? 'warning' : 'error');
     } else {
       toast('撤销失败: ' + (result.errors?.[0]?.error || '未知错误'), 'error');
     }
@@ -868,6 +955,11 @@ function newScan() {
   state.files = [];
   state.classifiedFiles = [];
   state.plan = null;
+  state.scanId = null;
+  state.planId = null;
+  state.planRevision = 0;
+  state.planDirty = false;
+  state.regenerating = false;
   state.selectedFiles.clear();
   state.excludedFiles.clear();
   state.customTargetRoot = null;
@@ -914,11 +1006,26 @@ async function loadHistory() {
 
 function renderHistoryItem(session) {
   const div = document.createElement('div');
-  div.className = 'history-item' + (session.undone ? ' undone' : '');
+  const undone = session.undone;
+  div.className = 'history-item' + (undone ? ' undone' : '');
   const date = new Date(session.timestamp).toLocaleString('zh-CN', {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
   });
   const moveCount = session.moves ? session.moves.length : 0;
+
+  // 撤销状态标签
+  let undoLabel = '';
+  if (undone) {
+    const status = session.undoStatus || 'fully_reverted';
+    const labels = {
+      fully_reverted: '✓ 完全撤销',
+      partially_reverted: '⚠ 部分恢复（' + (session.undoConflictCount || 0) + ' 处冲突）',
+      partial: '⚠ 部分撤销',
+      failed: '✗ 撤销失败',
+    };
+    undoLabel = '<span style="font-size:11px;color:var(--text-tertiary);">' + (labels[status] || '已撤销') + '</span>';
+  }
+
   div.innerHTML =
     '<div class="history-item-header">' +
       '<span class="history-item-date">' + date + '</span>' +
@@ -926,8 +1033,8 @@ function renderHistoryItem(session) {
     '</div>' +
     '<div class="history-item-path" title="' + escapeHtml(session.sourceDir || '') + '">' + escapeHtml(truncatePath(session.sourceDir || '', 60)) + '</div>' +
     '<div class="history-item-actions">' +
-      (session.undone ? '<span style="font-size:11px;color:var(--text-tertiary);">已撤销</span>' :
-       '<button class="btn-link" onclick="undoSession(\'' + session.id + '\')">撤销</button>') +
+      undoLabel +
+      (!undone ? '<button class="btn-link" onclick="undoSession(\'' + session.id + '\')">撤销</button>' : '') +
     '</div>';
   return div;
 }
