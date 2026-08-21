@@ -118,6 +118,17 @@ node server.js
 - AI 分类改为分批处理，不再因文件数量关闭 AI
 - 安全边界收紧（CORS / localhost / API Key 遮盖）
 
+## 项目文档
+
+除本 README 外，项目维护以下长期文档：
+
+| 文档 | 用途 |
+|------|------|
+| [`COLLAB_WORKFLOW.md`](COLLAB_WORKFLOW.md) | AI 协同开发流程（Builder / Reviewer / Product Owner 角色与循环） |
+| [`ROADMAP.md`](ROADMAP.md) | 版本路线图：当前阶段、后续版本、长期方向 |
+| [`DECISIONS.md`](DECISIONS.md) | 重要架构决策与 Trade-off，防止后续迭代推翻已确认设计 |
+| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | 已知问题清单，含延后原因和计划版本 |
+
 ## 路线图
 
 - [x] 多维分类模型
