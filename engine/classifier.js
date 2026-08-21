@@ -15,6 +15,7 @@
 
 const path = require('path');
 const contentExtractor = require('./content-extractor');
+const contentSummary = require('./content-summary');
 
 // ═══════════════════════════════════════════════
 // 维度一：文件类型 (fileType)
@@ -613,8 +614,8 @@ async function classifyBatch(files, config = {}) {
     throw err;
   }
 
-  // ── 内容辅助分类（V0.4） ──
-  // 对低置信度文件尝试读取内容，提升分类准确性
+  // ── 内容辅助分类（V0.4.1） ──
+  // 对低置信度文件尝试读取内容，生成 Content Summary，提升分类准确性
   const contentAware = config.contentAware !== false; // 默认开启
   if (contentAware) {
     const needsContent = results.filter(r =>
@@ -629,10 +630,16 @@ async function classifyBatch(files, config = {}) {
         for (const r of needsContent) {
           const extracted = extractMap.get(r.path);
           if (extracted && extracted.success) {
-            const evidence = buildContentEvidence(r, extracted);
+            // V0.4.1: 生成 Content Summary（统一数据结构）
+            const summary = contentSummary.buildLocalSummary(extracted, r);
+            r.contentSummary = summary;
+
+            // 构建结构化内容证据
+            const evidence = buildStructuredContentEvidence(r, extracted, summary);
             r.contentEvidence = evidence;
-            // 用内容证据调整分类
-            applyContentEvidence(r, extracted);
+
+            // 用 Content Summary 调整分类
+            applyContentSummary(r, summary);
           } else if (extracted && extracted.extractor === 'skip') {
             r.contentEvidence = {
               skipped: true,
@@ -642,7 +649,6 @@ async function classifyBatch(files, config = {}) {
         }
       } catch (err) {
         console.warn('[classifier] content extraction failed:', err.message);
-      // 内容提取失败不影响分类流程
       }
     }
   }
@@ -689,22 +695,35 @@ async function classifyBatch(files, config = {}) {
 }
 
 /**
- * 构建内容证据（用于用户展示分类依据）
+ * 构建结构化内容证据（V0.4.1：用于用户展示分类依据）
+ *
+ * 返回结构：
+ * {
+ *   summary,        // Content Summary 概要
+ *   title,          // 提取的标题
+ *   keywords,       // 发现的关键词
+ *   extractor,      // 内容提取方式
+ *   source,         // 证据来源
+ *   confidence,     // 内容置信度
+ * }
  */
-function buildContentEvidence(ruleResult, extracted) {
+function buildStructuredContentEvidence(ruleResult, extracted, summary) {
   const evidence = {
     extractor: extracted.extractor,
-    preview: (extracted.textPreview || '').slice(0, 200),
+    source: summary.source,
+    summary: summary.summary,
+    title: summary.title,
+    keywords: summary.keywords,
+    confidence: summary.confidence,
+    method: summary.method,
   };
 
-  if (extracted.metadata) {
-    const m = extracted.metadata;
-    if (m.lineCount) evidence.lineCount = m.lineCount;
+  // 保留原始元数据引用（用于 tooltip 展示）
+  const m = extracted.metadata;
+  if (m) {
     if (m.headings && m.headings.length > 0) evidence.headings = m.headings.slice(0, 5);
     if (m.topKeys && m.topKeys.length > 0) evidence.jsonKeys = m.topKeys.slice(0, 8);
     if (m.headers && m.headers.length > 0) evidence.csvHeaders = m.headers.slice(0, 8);
-    if (m.rowCount) evidence.csvRows = m.rowCount;
-    if (m.inferredTheme) evidence.inferredTheme = m.inferredTheme;
     if (m.firstLines) evidence.firstLines = m.firstLines.slice(0, 3);
   }
 
@@ -712,56 +731,77 @@ function buildContentEvidence(ruleResult, extracted) {
 }
 
 /**
- * 应用内容证据调整分类结果
+ * 应用 Content Summary 调整分类结果（V0.4.1）
+ *
+ * 分类依据拆分：
+ * - metadataEvidence: 来自文件名/扩展名/路径的证据
+ * - contentEvidence: 来自 Content Summary 的证据
+ * - finalReason: 最终分类理由
  */
-function applyContentEvidence(result, extracted) {
-  const m = extracted.metadata;
+function applyContentSummary(result, summary) {
+  // 构建分类证据链
+  const metadataEvidence = [];
+  const contentEvidence = [];
 
-  // JSON 内容推断主题
-  if (m.inferredTheme && result.contentTheme === '默认') {
-    result.contentTheme = m.inferredTheme;
-    result.suggestedTarget = m.inferredTheme;
-    result.method = result.method + '+content';
-    result.confidence = Math.max(result.confidence, 0.7);
+  // 元数据证据
+  metadataEvidence.push(`文件类型: ${result.fileTypeLabel || result.fileType}`);
+  if (result.contentTheme && result.contentTheme !== '默认') {
+    metadataEvidence.push(`主题: ${result.contentTheme}`);
   }
 
-  // Markdown 标题推断主题
-  if (m.headings && m.headings.length > 0 && result.contentTheme === '默认') {
-    const headingText = m.headings.join(' ').toLowerCase();
-    for (const { pattern, theme, weight } of THEME_PATTERNS) {
-      if (pattern.test(headingText)) {
-        result.contentTheme = theme;
-        result.suggestedTarget = theme;
-        result.method = result.method + '+content';
-        result.confidence = Math.max(result.confidence, weight);
-        break;
+  // 内容证据
+  if (summary.title && summary.title !== result.name) {
+    contentEvidence.push(`内容标题: ${summary.title}`);
+  }
+  if (summary.summary) {
+    contentEvidence.push(`内容摘要: ${summary.summary}`);
+  }
+  if (summary.keywords && summary.keywords.length > 0) {
+    contentEvidence.push(`发现关键词: ${summary.keywords.slice(0, 5).join(', ')}`);
+  }
+
+  // 用 Content Summary 提升分类
+  if (summary.confidence > result.confidence) {
+    result.confidence = summary.confidence;
+  }
+
+  // 如果内容推断了主题且当前是默认，使用内容主题
+  if (summary.title && result.contentTheme === '默认') {
+    // 尝试从 summary keywords 中匹配主题
+    for (const kw of summary.keywords) {
+      for (const { pattern, theme, weight } of THEME_PATTERNS) {
+        if (pattern.test(kw) || pattern.test(summary.title)) {
+          result.contentTheme = theme;
+          result.suggestedTarget = theme;
+          result.method = result.method + '+content-summary';
+          result.confidence = Math.max(result.confidence, weight);
+          break;
+        }
       }
+      if (result.contentTheme !== '默认') break;
     }
   }
 
-  // CSV 表头推断主题
-  if (m.headers && m.headers.length > 0 && result.contentTheme === '默认') {
-    const headerText = m.headers.join(' ').toLowerCase();
-    for (const { pattern, theme, weight } of THEME_PATTERNS) {
-      if (pattern.test(headerText)) {
-        result.contentTheme = theme;
-        result.suggestedTarget = theme;
-        result.method = result.method + '+content';
-        result.confidence = Math.max(result.confidence, weight);
-        break;
-      }
-    }
-  }
+  // 存储结构化证据
+  result.metadataEvidence = metadataEvidence;
+  result.contentEvidenceDetail = contentEvidence;
+  result.finalReason = buildFinalReason(metadataEvidence, contentEvidence, result);
+}
 
-  // 源码文件：根据内容判断是配置还是代码
-  if (extracted.extractor === 'plain' && result.fileType === 'code') {
-    const text = (extracted.textPreview || '').toLowerCase();
-    if (text.includes('config') || text.includes('设置') || text.includes('setting')) {
-      result.contentTheme = '配置';
-      result.suggestedTarget = '配置';
-      result.method = result.method + '+content';
-    }
+/**
+ * 构建最终分类理由
+ */
+function buildFinalReason(metadataEvidence, contentEvidence, result) {
+  const parts = [];
+  parts.push(`分类: ${result.fileTypeLabel || result.fileType}`);
+  if (result.contentTheme && result.contentTheme !== '默认') {
+    parts.push(`主题: ${result.contentTheme}`);
   }
+  parts.push(`方法: ${result.method}`);
+  if (contentEvidence.length > 0) {
+    parts.push(`内容依据: ${contentEvidence.slice(0, 3).join(' | ')}`);
+  }
+  return parts.join(' · ');
 }
 
 module.exports = {
@@ -773,4 +813,5 @@ module.exports = {
   getFileTypes,
   FILE_TYPES,
   EXT_TO_FILE_TYPE,
+  THEME_PATTERNS,
 };

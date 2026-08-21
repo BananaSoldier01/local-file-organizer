@@ -22,6 +22,36 @@ const MAX_READ_SIZE = 1 * 1024 * 1024;     // 单文件最大读取 1MB
 const MAX_TEXT_LENGTH = 8000;              // 最大提取字符数
 const MAX_JSON_DEPTH = 20;                // JSON 解析最大嵌套深度
 
+// ── 内容缓存 (V0.4.1) ─────────────────────────────────────
+// Key: filePath + mtime + size，避免重复读取相同文件
+const contentCache = new Map();
+const MAX_CACHE_SIZE = 200;
+
+function getCacheKey(file) {
+  // 使用文件路径 + mtime + size 作为缓存键
+  // mtime 确保文件修改后缓存失效
+  return file.path + '|' + (file.mtime || 0) + '|' + (file.size || 0);
+}
+
+function getFromCache(file) {
+  const key = getCacheKey(file);
+  return contentCache.get(key) || null;
+}
+
+function setToCache(file, result) {
+  const key = getCacheKey(file);
+  contentCache.set(key, result);
+  // 限制缓存大小，避免内存泄漏
+  if (contentCache.size > MAX_CACHE_SIZE) {
+    const firstKey = contentCache.keys().next().value;
+    contentCache.delete(firstKey);
+  }
+}
+
+function clearCache() {
+  contentCache.clear();
+}
+
 // ── 支持的格式 ────────────────────────────────────────────
 // 第一阶段：txt / md / json / csv / 常见源码文件
 const SUPPORTED_EXTENSIONS = new Set([
@@ -81,6 +111,10 @@ function parseCsvPreview(text) {
  * @returns {object} { success, extractor, metadata, textPreview, truncated, error }
  */
 function extract(file) {
+  // ── 0. 缓存检查 (V0.4.1) ──
+  const cached = getFromCache(file);
+  if (cached) return cached;
+
   const filePath = file.path;
   const ext = (file.extension || '').toLowerCase();
   const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
@@ -90,7 +124,7 @@ function extract(file) {
   try {
     stat = fs.statSync(absPath);
   } catch (e) {
-    return {
+    const result = {
       success: false,
       extractor: null,
       metadata: null,
@@ -98,11 +132,13 @@ function extract(file) {
       truncated: false,
       error: '文件不可读: ' + e.message,
     };
+    setToCache(file, result);
+    return result;
   }
 
   // 超大文件自动跳过
   if (stat.size > MAX_READ_SIZE) {
-    return {
+    const result = {
       success: false,
       extractor: 'skip',
       metadata: { reason: 'file_too_large', size: stat.size, limit: MAX_READ_SIZE },
@@ -110,11 +146,13 @@ function extract(file) {
       truncated: false,
       error: null,
     };
+    setToCache(file, result);
+    return result;
   }
 
   // 不支持的格式自动跳过
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
-    return {
+    const result = {
       success: false,
       extractor: 'skip',
       metadata: { reason: 'unsupported_format', extension: ext },
@@ -122,6 +160,8 @@ function extract(file) {
       truncated: false,
       error: null,
     };
+    setToCache(file, result);
+    return result;
   }
 
   // ── 2. 读取文件内容 ──
@@ -129,7 +169,7 @@ function extract(file) {
   try {
     raw = fs.readFileSync(absPath, 'utf-8');
   } catch (e) {
-    return {
+    const result = {
       success: false,
       extractor: null,
       metadata: null,
@@ -137,6 +177,8 @@ function extract(file) {
       truncated: false,
       error: '读取失败: ' + e.message,
     };
+    setToCache(file, result);
+    return result;
   }
 
   // ── 3. 截断长文本 ──
@@ -162,7 +204,7 @@ function extract(file) {
       result = extractPlain(text);
   }
 
-  return {
+  const finalResult = {
     success: true,
     extractor: result.extractor,
     metadata: result.metadata || {},
@@ -170,6 +212,8 @@ function extract(file) {
     truncated,
     error: null,
   };
+  setToCache(file, finalResult);
+  return finalResult;
 }
 
 // ── 各格式提取函数 ─────────────────────────────────────────

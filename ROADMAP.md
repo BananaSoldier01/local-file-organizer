@@ -1,10 +1,10 @@
 # ROADMAP
 
-> 最后更新：V0.4.0
+> 最后更新：V0.4.1
 
 ---
 
-## 当前阶段：V0.4.0 — Content-Aware Organization 🔄
+## 当前阶段：V0.4.1 — Semantic Classification Layer 🔄
 
 V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
 
@@ -42,6 +42,37 @@ V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revisio
 4. 用户能够看到分类依据 ✅
 5. 测试证明 Content-aware 比 metadata-only 更准确 ✅
 6. 原有 V0.3.x 全部测试保持通过 ✅
+
+---
+
+## 当前阶段：V0.4.1 — Semantic Classification Layer 🔄
+
+### V0.4.1 完成项
+
+- Content Summary 层：`engine/content-summary.js`，统一 `{ title, summary, keywords, entities, confidence, method }`
+- Phase 1 本地规则 Summary（Markdown / JSON / CSV / Plain）
+- Phase 2 LLM Summary 接口预留
+- Classifier 重构：输入从 `textPreview` 升级为 `contentSummary`
+- 分类依据拆分：`metadataEvidence` + `contentEvidenceDetail` + `finalReason`
+- Content Extractor 缓存：`filePath + mtime + size`，避免重复读取
+- Ambiguous Filename Dataset 评估
+- Content Summary 准确率 1/6 vs Metadata-only 0/6
+
+### V0.4.1 验收标准
+
+- [x] Extractor 与 Summary 分层
+- [x] Classifier 不直接依赖原始 textPreview
+- [x] Summary 接口可替换
+- [x] Content Evidence 结构化
+- [x] 用户可以看到分类依据
+- [x] 分类结果比 metadata-only 更准确
+- [x] Evaluation 数据集增加真实模糊文件
+- [x] Content Summary 有缓存机制
+- [x] 重复 Plan 不重复解析相同文件
+- [x] 内容读取限制继续有效
+- [x] 不发送完整文件内容
+- [x] 失败自动降级到 metadata-only
+- [x] 全部回归测试通过
 
 V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
 

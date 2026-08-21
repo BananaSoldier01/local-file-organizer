@@ -491,3 +491,86 @@ extract(file) → {
 - 极少数情况下，高置信度文件可能因内容而需要调整分类
 
 **状态**：V0.4.0 已实施。
+
+---
+
+## D-024：V0.4.1 — Content Summary 分层架构
+
+**决策**：在 Content Extractor 和 Classifier 之间建立独立的 Content Summary 层（`engine/content-summary.js`），Classifier 不直接依赖原始 `textPreview`。
+
+**理由**：
+
+- 原始 `textPreview` 是未加工的文本片段，不适合直接作为分类依据
+- Content Summary 提供统一数据结构 `{ title, summary, keywords, entities, confidence, method }`
+- 分层后，Summary 实现可替换（Local Summary / LLM Summary），Classifier 不需要修改
+
+**Phase 1：本地规则 Summary**
+
+| 格式 | 提取方式 |
+|------|----------|
+| Markdown | 一级/二级标题 + 前 N 行摘要 |
+| JSON | 顶层 key + value 类型 + 主要字段 |
+| CSV | 表头 + 数据类型 + 样例值 |
+| Code | 文件名 + import/package + 注释 |
+| Plain | 前 N 行 + 关键词匹配 |
+
+**Phase 2：LLM Summary 接口预留**
+
+- `summarizeWithLLM()` 接口已定义，当前返回 null
+- 未来可接入 LLM 增强 Summary，统一返回格式不变
+
+**Trade-off**：
+
+- 增加了模块数量（content-extractor → content-summary → classifier）
+- 本地规则 Summary 准确率有限（关键词匹配），需要 LLM 补强
+
+**状态**：V0.4.1 已实施。
+
+---
+
+## D-025：V0.4.1 — 分类依据结构化
+
+**决策**：分类结果中增加 `metadataEvidence` / `contentEvidenceDetail` / `finalReason` 三个字段，拆分分类依据来源。
+
+**理由**：
+
+- 用户需要知道"为什么这样分类"，不只是"AI 推荐"
+- 元数据证据（文件名/扩展名/路径）和内容证据（Content Summary）分开
+- 最终理由汇总两者，形成可解释的分类链
+
+**字段定义**：
+
+```json
+{
+  "metadataEvidence": ["文件类型: 文档", "主题: 项目"],
+  "contentEvidenceDetail": ["内容标题: XXX项目实施方案", "发现关键词: 项目, 计划, 实施"],
+  "finalReason": "分类: 文档 · 主题: 项目 · 方法: rule+content-summary · 内容依据: ..."
+}
+```
+
+**Trade-off**：
+
+- 增加了分类结果的数据量
+- 证据链构建依赖 Summary 质量
+
+**状态**：V0.4.1 已实施。
+
+---
+
+## D-026：V0.4.1 — Content Extractor 缓存
+
+**决策**：Content Extractor 增加内存缓存，Key = `filePath + mtime + size`。
+
+**理由**：
+
+- 同一文件在 Scan → Exclude → Restore → 重新 Plan 过程中可能被多次读取
+- 缓存避免重复 I/O，提升性能
+- mtime 确保文件修改后缓存自动失效
+- 缓存大小限制 200 条，避免内存泄漏
+
+**Trade-off**：
+
+- 缓存存储在内存中，服务器重启后丢失
+- 极端情况下（mtime 相同但内容不同），缓存可能返回过期结果（概率极低）
+
+**状态**：V0.4.1 已实施。

@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.4.0 · Content-Aware Organization · 个人测试项目。
+> V0.4.1 · Semantic Classification Layer · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -118,6 +118,18 @@ node server.js
 - **API Contract Regression**：scanId → classifyId → planId → execId → sessionId 字段连续性验证
 - **Evaluation System**：`test/evaluation.js` 对比 metadata-only vs content-aware 分类准确率
 - **测试总数**：126/126 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 9）
+
+## V0.4.1 变化（Semantic Classification Layer）
+
+核心目标：让 Content Extractor 提取出的内容真正成为分类依据，而不是简单关键词补充。
+
+- **Content Summary 层**：`engine/content-summary.js`，统一数据结构 `{ title, summary, keywords, entities, confidence, method }`
+- **Summary 生成策略**：Phase 1 本地规则（Markdown 标题 / JSON 键 / CSV 表头 / 纯文本关键词），Phase 2 LLM 接口预留
+- **Classifier 重构**：输入从 `textPreview` 升级为 `contentSummary`，分类依据拆分为 `metadataEvidence` + `contentEvidenceDetail` + `finalReason`
+- **Content Extractor 缓存**：Key = `filePath + mtime + size`，避免重复读取相同文件；mtime 变化自动失效
+- **Ambiguous Filename Dataset**：新增模糊文件名测试集（新建文档.txt / 最终版.md / 资料1.json / 附件.csv / test.py / IMG_20260820.pdf）
+- **评估结果**：Metadata-only 0/6 → Content Summary 1/6，提升 1 个文件
+- **测试总数**：126/126 通过（smoke 11 + integration 67 + scenario 41 + e2e 24 + session-ttl 5 + evaluation 27）
 
 ## V0.3.4 变化（Plan Integrity & Interaction Consistency）
 
