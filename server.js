@@ -750,6 +750,14 @@ async function handlePlan(req, res) {
     // touch scan session
     touchStore(scanRootStore, scanId);
 
+    // 解析 targetRoot：如果它是相对路径，相对于 sourceRoot 解析
+    if (options && options.targetRoot) {
+      const tr = options.targetRoot;
+      if (!path.isAbsolute(tr)) {
+        options.targetRoot = path.resolve(sourceRoot, tr);
+      }
+    }
+
     const plan = organizer.generatePlan(files, options);
     const validation = organizer.validatePlan(plan);
 

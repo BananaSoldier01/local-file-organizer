@@ -27,17 +27,5 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Smoke tests
-        run: npm run test:smoke
-
-      - name: Integration tests
-        run: npm run test:integration
-
-      - name: Scenario tests
-        run: npm run test:scenario
-
-      - name: Session TTL tests
-        run: npm run test:session-ttl
-
-      - name: Browser E2E tests
-        run: npm run test:e2e
+      - name: Run all tests
+        run: npm test

@@ -1,10 +1,32 @@
 # ROADMAP
 
-> 最后更新：V0.3.3
+> 最后更新：V0.3.5.1
 
 ---
 
-## 当前阶段：V0.3.5 — UI Runtime & Race Hardening ✅
+## 当前阶段：V0.3.5.1 — Exit Hotfix ✅
+
+V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
+
+### V0.3.5.1 完成项
+
+- Target Root `path.resolve` Runtime Bug 修复 + UI 收紧
+- Exclude All → Restore Revision Deadlock 修复
+- Revision 状态机统一收口（markPlanChanged / completePlanRevision / failPlanRevision）
+- Plan Failure Recovery（Toast + Retry，不增加 desiredRevision）
+- 统一 Test Runner（test/run-with-server.js）
+- Browser E2E 新增：Last Write Wins Race + Target Root E2E
+- GitHub Actions CI 配置（无需人工启动 Server）
+
+### V0.3.x Final Exit Criteria：全部 PASS ✅
+
+---
+
+## 下一阶段：V0.4.0 — Content-Aware Organization
+
+核心方向：让整理判断开始真正利用"文件内容"，而不只是文件名 / 扩展名 / 路径。
+
+V0.4 的具体 Goal 在 V0.3.5.1 通过后展开。
 
 V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
 

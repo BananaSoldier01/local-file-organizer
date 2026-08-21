@@ -62,6 +62,31 @@ const path = {
   basename: (p) => { if (!p) return ''; const parts = p.split('/'); return parts[parts.length - 1]; },
   dirname: (p) => { if (!p) return ''; const parts = p.split('/'); parts.pop(); return parts.join('/') || '/'; },
   extname: (p) => { const parts = p.split('.'); return parts.length > 1 ? '.' + parts[parts.length - 1] : ''; },
+  // resolve 相对路径到绝对路径（Browser 环境轻量实现，仅用于前端校验）
+  resolve: function() {
+    const args = Array.prototype.slice.call(arguments);
+    // 找到最后一个绝对路径
+    let base = '/';
+    for (let i = args.length - 1; i >= 0; i--) {
+      if (args[i] && args[i].startsWith('/')) { base = args[i]; break; }
+    }
+    // 从 base 开始逐段解析
+    const segs = base.split('/').filter(Boolean);
+    for (const arg of args) {
+      if (!arg) continue;
+      if (arg.startsWith('/')) {
+        segs.length = 0;
+        segs.push(...arg.split('/').filter(Boolean));
+      } else {
+        for (const s of arg.split('/').filter(Boolean)) {
+          if (s === '..') segs.pop();
+          else if (s !== '.') segs.push(s);
+        }
+      }
+    }
+    return '/' + segs.join('/');
+  },
+  sep: '/',
 };
 
 // ── 工具函数 ──────────────────────────────────────────────
@@ -293,12 +318,35 @@ function bindEvents() {
 
   $('custom-target-input').addEventListener('change', (e) => {
     const val = e.target.value.trim();
+
+    // 前端校验：只接受相对子目录名，拒绝绝对路径 / .. / 空转义
+    if (val) {
+      // 拒绝绝对路径
+      if (val.startsWith('/')) {
+        toast('请输入相对子目录名，不支持绝对路径', 'error');
+        e.target.value = '';
+        return;
+      }
+      // 拒绝包含 .. 的路径
+      if (val.split('/').some(s => s === '..')) {
+        toast('不能使用 .. 返回上级目录', 'error');
+        e.target.value = '';
+        return;
+      }
+      // 拒绝以 / 开头或结尾的异常路径
+      if (val.startsWith('/') || val.endsWith('/')) {
+        toast('子目录名格式不正确', 'error');
+        e.target.value = '';
+        return;
+      }
+    }
+
     state.customTargetRoot = val || null;
 
-    // 前端校验：目标必须在 Scan Root 内
+    // 前端校验：目标必须在 Scan Root 内（防御性检查）
     if (val && state.currentFolder) {
-      const targetPath = path.resolve(state.currentFolder, val);
       const scanRoot = path.resolve(state.currentFolder);
+      const targetPath = path.resolve(scanRoot, val);
       if (!targetPath.startsWith(scanRoot + path.sep) && targetPath !== scanRoot) {
         toast('整理目标必须在扫描根目录内', 'error');
         e.target.value = '';
@@ -306,7 +354,7 @@ function bindEvents() {
         return;
       }
     }
-    regeneratePlan();
+    markPlanChanged();
   });
 
   $('btn-rescan').addEventListener('click', () => {
@@ -458,7 +506,7 @@ async function startScan(folderPath) {
     state.desiredRevision = 1;
     state.appliedRevision = 1;
     state.pendingRevision = 0;
-    applyPlanResponse(1, planResult.data);
+    completePlanRevision(1, planResult.data);
 
     // 6. 更新 UI
     updateSidebarStats();
@@ -624,7 +672,7 @@ function renderWorkspaceRow(file) {
   themeInput.addEventListener('change', () => {
     file.contentTheme = themeInput.value.trim() || '默认';
     file.suggestedTarget = file.contentTheme;
-    regeneratePlan();
+    markPlanChanged();
   });
 
   // 目标目录修改
@@ -632,7 +680,7 @@ function renderWorkspaceRow(file) {
   targetInput.addEventListener('change', () => {
     const newTarget = targetInput.value.trim() || '其他';
     file.suggestedTarget = newTarget;
-    regeneratePlan();
+    markPlanChanged();
   });
 
   return tr;
@@ -742,7 +790,7 @@ function excludeSelected() {
   updateSelectionUI();
   toast('已排除 ' + count + ' 个文件', 'success');
   // 排除后必须重新生成可信 Plan
-  regeneratePlan();
+  markPlanChanged();
 }
 
 function restoreExcluded() {
@@ -756,7 +804,7 @@ function restoreExcluded() {
   updateSelectionUI();
   toast('已恢复所有排除的文件', 'success');
   // 恢复后必须重新生成可信 Plan
-  regeneratePlan();
+  markPlanChanged();
 }
 
 function updateSelectionUI() {
@@ -765,22 +813,21 @@ function updateSelectionUI() {
   if (btn) btn.textContent = '排除选中' + (count > 0 ? ' (' + count + ')' : '');
 }
 
-// ── 重新生成方案（Last Write Wins / Latest Revision Wins） ──
-async function regeneratePlan() {
+// ── 用户修改 Plan（增加 desiredRevision，触发同步） ──
+function markPlanChanged() {
+  state.desiredRevision++;
+  regenerateLatestPlan();
+}
+
+// ── 内部同步 Plan（不增加 desiredRevision，仅补发当前最新意图） ──
+async function regenerateLatestPlan() {
   if (!state.scanId) return;      // 无 scanId 不生成可信 Plan
 
-  // 每次影响最终 Plan 的用户修改都递增 desiredRevision
-  state.desiredRevision++;
   const thisRevision = state.desiredRevision;
 
   // 如果已有请求在进行，不发新请求（避免并发浪费）
-  // 但记录 pending 状态，已有请求返回后会自动检查并补发
-  const hasPending = state.pendingRevision > 0;
-  if (hasPending) {
-    // 已有请求处理更旧的 revision，标记为 superseded
-    // 该请求返回后会在 handlePlanResponse 中发现 requestRevision < desiredRevision 并补发
-    return;
-  }
+  // 已有请求返回后会在 handlePlanResponse 中发现 requestRevision < desiredRevision 并补发
+  if (state.pendingRevision > 0) return;
 
   // 启动新请求
   state.pendingRevision = thisRevision;
@@ -789,26 +836,25 @@ async function regeneratePlan() {
   try {
     // 过滤已排除文件，只将有效文件发送给服务器
     const effectiveFiles = state.classifiedFiles.filter(f => !state.excludedFiles.has(f.path));
+
+    let planData;
     if (effectiveFiles.length === 0) {
-      applyPlanResponse(thisRevision, { moves: [], conflicts: [], summary: {}, targetRoot: null, planId: null });
-      return;
+      // Empty Plan：直接构造，不经过 HTTP
+      planData = { moves: [], conflicts: [], summary: {}, targetRoot: null, planId: null };
+    } else {
+      const result = await API.generatePlan(effectiveFiles, {
+        targetRoot: state.customTargetRoot,
+        scanId: state.scanId,
+      });
+      planData = result.data;
     }
 
-    const result = await API.generatePlan(effectiveFiles, {
-      targetRoot: state.customTargetRoot,
-      scanId: state.scanId,
-    });
-
-    handlePlanResponse(thisRevision, result.data);
+    // 统一收口：所有路径（HTTP / Empty / 重试）都走 handlePlanResponse
+    handlePlanResponse(thisRevision, planData);
   } catch (err) {
     console.warn('[plan] 重新生成失败:', err.message);
-    toast('方案更新失败，保留上一次有效方案', 'error');
-    // 失败时清除 pending，允许重试
-    if (state.pendingRevision === thisRevision) {
-      state.pendingRevision = 0;
-      disableExecuteBtn(false);
-      updateExecuteBtnState();
-    }
+    // 失败：清除 pending，保留上一份有效 Plan，显示错误状态
+    failPlanRevision(thisRevision, err.message);
   }
 }
 
@@ -824,23 +870,91 @@ function handlePlanResponse(requestRevision, planData) {
 
   if (requestRevision < state.desiredRevision) {
     // 情况 B：用户期间又修改了，丢弃 stale 响应
-    // 立即补发最新 revision
-    regeneratePlan();
+    // 立即补发最新 revision（不增加 desiredRevision）
+    regenerateLatestPlan();
     return;
   }
 
   // 情况 A：这是最新状态，接受
-  applyPlanResponse(requestRevision, planData);
+  completePlanRevision(requestRevision, planData);
 }
 
-function applyPlanResponse(revision, planData) {
-  // 原子更新：plan + planId 同时替换
+/**
+ * 完成 Plan Revision：接受新 Plan，更新 appliedRevision
+ */
+function completePlanRevision(revision, planData) {
   state.plan = planData;
   state.planId = planData.planId || null;
   state.appliedRevision = revision;
+  state.planError = null;
+  state.planErrorRetry = null;
   disableExecuteBtn(false);
   updateExecuteBtnState();
   renderWorkspace();
+}
+
+/**
+ * Plan 更新失败：清除 pending，保留旧 Plan，标记错误状态
+ */
+function failPlanRevision(revision, errMsg) {
+  if (state.pendingRevision === revision) {
+    state.pendingRevision = 0;
+  }
+  state.planError = errMsg;
+  state.planErrorRetry = revision; // 记录失败的 revision，用于 Retry
+  disableExecuteBtn(false);
+  updateExecuteBtnState();
+  toast('整理方案更新失败：' + errMsg + '，点击重试', 'error');
+  // 显示 Retry 入口
+  showPlanRetry();
+}
+
+/**
+ * 重试 Plan 生成（不增加 desiredRevision）
+ */
+async function retryPlanGeneration() {
+  if (!state.scanId) return;
+  if (state.pendingRevision > 0) return; // 已有请求在进行
+  if (state.planErrorRetry === null) return; // 无待重试
+
+  state.pendingRevision = state.planErrorRetry;
+  state.planError = null;
+  state.planErrorRetry = null;
+  disableExecuteBtn(true, '正在重试…');
+
+  try {
+    const effectiveFiles = state.classifiedFiles.filter(f => !state.excludedFiles.has(f.path));
+    let planData;
+    if (effectiveFiles.length === 0) {
+      planData = { moves: [], conflicts: [], summary: {}, targetRoot: null, planId: null };
+    } else {
+      const result = await API.generatePlan(effectiveFiles, {
+        targetRoot: state.customTargetRoot,
+        scanId: state.scanId,
+      });
+      planData = result.data;
+    }
+    handlePlanResponse(state.pendingRevision, planData);
+  } catch (err) {
+    console.warn('[plan] 重试失败:', err.message);
+    failPlanRevision(state.pendingRevision, err.message);
+  }
+}
+
+/**
+ * 显示 Plan 重试入口
+ */
+function showPlanRetry() {
+  const btn = $('plan-retry-btn');
+  if (btn) {
+    btn.style.display = '';
+    btn.onclick = retryPlanGeneration;
+  }
+}
+
+function hidePlanRetry() {
+  const btn = $('plan-retry-btn');
+  if (btn) btn.style.display = 'none';
 }
 
 /**

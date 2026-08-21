@@ -301,6 +301,168 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════
+  // E2E-3 — Browser Last Write Wins Race Test
+  // ═══════════════════════════════════════════════
+  console.log('\n4. Browser Last Write Wins Race:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e3-'));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'race.txt'), 'race-content');
+
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await sleep(1000);
+
+    await page.fill('#folder-path-input', root);
+    await sleep(200);
+    await page.click('#btn-select-folder');
+
+    const workspaceReached = await waitForState('state-workspace', 60000);
+    check(workspaceReached, '进入 Workspace');
+
+    if (workspaceReached) {
+      // 使用 Playwright route 拦截 /api/plan，强制制造乱序响应
+      // Plan A → 600ms, Plan B → 300ms, Plan C → 50ms
+      let planCallCount = 0;
+      await page.route('**/api/plan', async (route) => {
+        planCallCount++;
+        const callNum = planCallCount;
+        // 根据请求中的 targetRoot 决定延迟
+        const request = route.request();
+        let delay = 100;
+        try {
+          const body = JSON.parse(request.postData() || '{}');
+          const target = body?.options?.targetRoot || '';
+          if (target.includes('目标A')) delay = 600;
+          else if (target.includes('目标B')) delay = 300;
+          else if (target.includes('目标C')) delay = 50;
+        } catch (_) { /* ignore */ }
+
+        // 让请求继续，但延迟响应
+        await new Promise(r => setTimeout(r, delay));
+        route.continue();
+      });
+
+      // 连续快速修改 Target：A → B → C
+      const targetInput = page.locator('#workspace-tbody tr:first-child .ws-target-input');
+
+      // Target-A
+      await page.evaluate((v) => {
+        const input = document.querySelector('#workspace-tbody tr:first-child .ws-target-input');
+        if (input) { input.value = v; input.dispatchEvent(new Event('change', { bubbles: true })); }
+      }, '目标A');
+      await sleep(50);
+
+      // Target-B
+      await page.evaluate((v) => {
+        const input = document.querySelector('#workspace-tbody tr:first-child .ws-target-input');
+        if (input) { input.value = v; input.dispatchEvent(new Event('change', { bubbles: true })); }
+      }, '目标B');
+      await sleep(50);
+
+      // Target-C
+      await page.evaluate((v) => {
+        const input = document.querySelector('#workspace-tbody tr:first-child .ws-target-input');
+        if (input) { input.value = v; input.dispatchEvent(new Event('change', { bubbles: true })); }
+      }, '目标C');
+      await sleep(50);
+
+      // 等待 Plan 同步
+      const executeReady = await waitForExecuteReady(30000);
+      check(executeReady, 'Execute 按钮在快速修改后可用');
+
+      // Execute
+      await page.evaluate(() => {
+        const btn = document.getElementById('btn-execute');
+        if (btn) btn.click();
+      });
+      await sleep(1000);
+
+      // 确认
+      await page.evaluate(() => {
+        const okBtn = document.getElementById('confirm-ok');
+        if (okBtn) okBtn.click();
+      });
+      await sleep(2000);
+
+      const doneReached = await waitForState('state-done', 120000);
+      check(doneReached, '执行完成');
+
+      // 验证文件最终在 Target-C，不在 A 或 B
+      const inC = fs.existsSync(path.join(root, 'src', '目标C', 'race.txt'));
+      const inA = fs.existsSync(path.join(root, 'src', '目标A', 'race.txt'));
+      const inB = fs.existsSync(path.join(root, 'src', '目标B', 'race.txt'));
+      check(inC, '文件在目标C（最后修改）');
+      check(!inA, '文件不在目标A（stale）');
+      check(!inB, '文件不在目标B（stale）');
+
+      // 清理 route 拦截
+      await page.unroute('**/api/plan');
+    }
+
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ═══════════════════════════════════════════════
+  // E2E-4 — Target Root Browser E2E
+  // ═══════════════════════════════════════════════
+  console.log('\n5. Target Root E2E:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e4-'));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'tr.txt'), 'tr-content');
+
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await sleep(1000);
+
+    await page.fill('#folder-path-input', root);
+    await sleep(200);
+    await page.click('#btn-select-folder');
+
+    const workspaceReached = await waitForState('state-workspace', 60000);
+    check(workspaceReached, '进入 Workspace');
+
+    if (workspaceReached) {
+      // 输入 Target Root：整理结果
+      await page.evaluate(() => {
+        const input = document.getElementById('custom-target-input');
+        if (input) { input.value = '整理结果'; input.dispatchEvent(new Event('change', { bubbles: true })); }
+      });
+      await sleep(1500);
+
+      // 等待 Execute 可用
+      const executeReady = await waitForExecuteReady(30000);
+      check(executeReady, 'Target Root 设置后 Execute 可用');
+
+      // Execute
+      await page.evaluate(() => {
+        const btn = document.getElementById('btn-execute');
+        if (btn) btn.click();
+      });
+      await sleep(1000);
+
+      await page.evaluate(() => {
+        const okBtn = document.getElementById('confirm-ok');
+        if (okBtn) okBtn.click();
+      });
+      await sleep(2000);
+
+      const doneReached = await waitForState('state-done', 120000);
+      check(doneReached, '执行完成');
+
+      // 验证文件在 ScanRoot/整理结果/ 下（可能在子分类目录中）
+      const srcDir = path.join(root, 'src');
+      const targetRootDir = path.join(srcDir, '整理结果');
+      // 文件在 ScanRoot/整理结果/文档/ 下（txt 文件分类为"文档"）
+      // ScanRoot = root（测试扫描的是 root 目录）
+      const expectedPath = path.join(root, '整理结果', '文档', 'tr.txt');
+      const found = fs.existsSync(expectedPath);
+      check(found, `文件在 ScanRoot/整理结果/文档/ 下 (${expectedPath})`);
+    }
+
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ═══════════════════════════════════════════════
   // Cleanup
   // ═══════════════════════════════════════════════
   await browser.close();

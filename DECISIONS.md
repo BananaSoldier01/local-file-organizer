@@ -378,3 +378,65 @@
 - 增加了前端代码复杂度
 
 **状态**：V0.3.5 已实施。前端校验 + 服务器 `checkMoveSafety` 双重保障。
+
+---
+
+## D-019：V0.3.5.1 — Revision 状态机统一收口
+
+**决策**：将 Plan Revision 的所有状态变更收口到三个函数，避免多处手工修改 `desiredRevision` / `appliedRevision` / `pendingRevision`。
+
+| 函数 | 职责 | 调用方 |
+|------|------|--------|
+| `markPlanChanged()` | 用户修改 Plan，增加 desiredRevision，触发同步 | 所有用户操作（Edit/Exclude/Restore/Target change） |
+| `completePlanRevision()` | 接受新 Plan，更新 appliedRevision | `handlePlanResponse()` |
+| `failPlanRevision()` | Plan 更新失败，清除 pending，保留旧 Plan | `regenerateLatestPlan()` catch |
+
+**理由**：
+
+- 原始 `regeneratePlan()` 同时承担"用户修改"和"内部同步"两个职责，导致 stale response 重试时错误增加 desiredRevision
+- Empty Plan 路径直接调用 `applyPlanResponse()` 绕过 `handlePlanResponse()`，导致 `pendingRevision` 残留
+- 统一收口后，所有路径（HTTP / Empty / Error / Cancel）都经过 `handlePlanResponse()`，状态机一致
+
+**Trade-off**：
+
+- 增加了函数数量（从 3 个增加到 7 个）
+- `markPlanChanged()` 和 `regenerateLatestPlan()` 的调用方需要明确区分
+
+**状态**：V0.3.5.1 已实施。
+
+---
+
+## D-020：V0.3.5.1 — Server 端 Target Root 相对路径解析
+
+**决策**：`handlePlan` 中如果 `options.targetRoot` 是相对路径，相对于 `sourceRoot` 解析为绝对路径。
+
+**理由**：
+
+- 前端只接受相对子目录名（如"整理结果"），不发送绝对路径
+- 服务器必须将相对路径解析为绝对路径，否则 `checkMoveSafety` 无法正确校验
+- 解析在 `handlePlan` 中进行，`organizer.generatePlan()` 始终收到绝对路径
+
+**Trade-off**：
+
+- 前后端对 targetRoot 的语义理解必须一致（前端=相对子目录，服务器=绝对路径）
+
+**状态**：V0.3.5.1 已实施。
+
+---
+
+## D-021：V0.3.5.1 — 统一 Test Runner
+
+**决策**：创建 `test/run-with-server.js`，统一管理 server 生命周期（spawn → wait ready → run tests → kill）。
+
+**理由**：
+
+- 原有测试脚本假设 server 已由人工启动，CI 环境无法保证
+- `npm test` 应该在干净环境中自动完成全部工作
+- 统一 runner 确保 server 始终被清理（包括测试失败时）
+
+**Trade-off**：
+
+- 增加了测试基础设施的复杂度
+- `session-ttl.js` 仍独立启动 server（因为它需要测试 TTL 行为本身）
+
+**状态**：V0.3.5.1 已实施。

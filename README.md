@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.5 · UI Runtime & Race Hardening · 个人测试项目。
+> V0.3.5.1 · Exit Hotfix · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -93,6 +93,17 @@ node server.js
 - **showState('done') 修复**：执行完成后正确切换到 Done 状态
 - **GitHub Actions CI**：`.github/workflows/test.yml` 自动运行全部测试
 - **测试总数**：114/114 通过（smoke 11 + integration 43 + scenario 41 + e2e 14 + session-ttl 5）
+
+## V0.3.5.1 变化（Exit Hotfix）
+
+- **Target Root Runtime 修复**：Browser `path` helper 新增 `resolve()` 方法，修复 `path.resolve is not a function`；UI 收紧为"整理到当前文件夹下"，只接受相对子目录名，拒绝绝对路径 / `..` / 空转义
+- **Server 端 targetRoot 解析**：`handlePlan` 将相对 targetRoot 相对于 sourceRoot 解析为绝对路径，确保路径安全检查通过
+- **Revision 状态机统一**：拆分 `markPlanChanged()`（用户修改，增加 desiredRevision）与 `regenerateLatestPlan()`（内部同步，不增加 desiredRevision）；所有 Plan 响应收口到 `handlePlanResponse()`，Empty Plan / HTTP / Error / Cancel 路径统一走 `completePlanRevision()` / `failPlanRevision()`
+- **Exclude All → Restore 修复**：Empty Plan 路径不再绕过 `handlePlanResponse()`，`pendingRevision` 始终被正确清除，Restore 后 Plan 正常更新
+- **Plan Failure Recovery**：新增 `failPlanRetry()` + `retryPlanGeneration()`，Plan 更新失败后保留旧 Plan、显示错误 Toast + 重试按钮，Retry 不增加 desiredRevision
+- **统一 Test Runner**：`test/run-with-server.js` 自动 spawn/kill server，`npm test` 可在干净环境运行全部测试
+- **Browser E2E 新增**：Last Write Wins Race（Playwright route 延迟注入）+ Target Root E2E，共 24/24 通过
+- **测试总数**：117/117 通过（smoke 11 + integration 43 + scenario 41 + e2e 24 + session-ttl 5）
 
 ## V0.3.4 变化（Plan Integrity & Interaction Consistency）
 
