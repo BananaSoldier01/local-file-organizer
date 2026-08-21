@@ -290,3 +290,91 @@
 - UI 需要处理更多状态标签
 
 **状态**：V0.3.4 已实施。
+
+---
+
+## D-015：Plan Revision 模型（Last Write Wins）
+
+**决策**：引入 `desiredRevision` / `appliedRevision` / `pendingRevision` 三段式状态模型，替代原有的 `planDirty` / `regenerating` 布尔标记。
+
+**理由**：
+
+- `planDirty` + `regenerating` 无法区分"用户修改了但请求还没发出"和"请求已发出但还没返回"
+- 连续快速修改时，旧请求可能覆盖新请求（stale write）
+- Revision 模型精确追踪：用户最新意图（desired）→ 正在请求（pending）→ 已应用（applied）
+
+**规则**：
+
+```
+每次影响最终 Plan 的用户修改 → desiredRevision++
+                            → 如果无 pending 请求，启动 regenerate
+                            → 如果有 pending 请求，不发新请求（记录 superseded）
+
+请求返回后：
+  requestRevision === desiredRevision → 接受，appliedRevision = requestRevision
+  requestRevision <  desiredRevision → 丢弃 stale 响应，立即补发
+```
+
+**Trade-off**：
+
+- 增加了状态复杂度（3 个 revision 字段 vs 2 个布尔标记）
+- 前端需要正确处理 stale 响应丢弃逻辑
+
+**状态**：V0.3.5 已实施。
+
+---
+
+## D-016：Browser E2E 必须监听 Runtime Error
+
+**决策**：Playwright E2E 测试必须监听 `pageerror`、console error 和 failed network request。任何异常即测试失败。
+
+**理由**：
+
+- V0.3.4 之前：Engine + API + 83 个 Node 测试全绿，但用户点击按钮后 Browser Runtime Error（`moves is not defined`）
+- 只有真实浏览器才能捕获 Node 环境无法发现的 Runtime Error
+- 这类错误是发布阻断级的，必须自动拦截
+
+**Trade-off**：
+
+- E2E 测试比 Node 测试慢（需要启动浏览器）
+- 需要处理 UI overlay 遮挡等浏览器特有问题
+
+**状态**：V0.3.5 已实施，14/14 E2E 测试通过，0 Runtime Error。
+
+---
+
+## D-017：Session Idle TTL 可测试化
+
+**决策**：`SESSION_IDLE_TTL` 从硬编码常量改为环境变量覆盖（`SESSION_IDLE_TTL_MS`），默认 30 分钟，测试使用 500ms。
+
+**理由**：
+
+- 30 分钟 TTL 无法在测试中真实验证（需要等待 30 分钟）
+- 环境变量覆盖允许测试使用短 TTL，真实验证 touch 延长和 idle 过期行为
+- 不影响生产环境默认值
+
+**Trade-off**：
+
+- 增加了一个环境变量
+- 测试需要启动独立服务器实例（使用不同端口）
+
+**状态**：V0.3.5 已实施，5/5 Session TTL 测试通过。
+
+---
+
+## D-018：Target Root 前端校验
+
+**决策**：Target Root 输入框增加前端校验，用户输入的路径必须在 Scan Root 内，否则立即提示。服务器端安全检查仍然保留。
+
+**理由**：
+
+- V0.3.4 架构决策已明确"所有目标必须在 Scan Root 内"
+- 如果只在服务端校验，用户要等到 Execute 时才能看到 403 错误
+- 前端校验提供即时反馈，改善用户体验
+
+**Trade-off**：
+
+- 前端校验不能替代服务器校验（恶意用户可绕过）
+- 增加了前端代码复杂度
+
+**状态**：V0.3.5 已实施。前端校验 + 服务器 `checkMoveSafety` 双重保障。

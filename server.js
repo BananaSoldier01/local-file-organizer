@@ -214,7 +214,7 @@ function cleanupStore(store, id, delayMs) {
 // ── Session 生命周期（idle TTL + touch）───────────────────────
 // 替代固定 120s 创建即过期的策略。
 // 用户 Review 期间每次有效操作 touch()，超过 IDLE_TTL 无操作才清理。
-const SESSION_IDLE_TTL = 30 * 60 * 1000; // 30 分钟 idle
+const SESSION_IDLE_TTL = parseInt(process.env.SESSION_IDLE_TTL_MS) || (30 * 60 * 1000); // 30 分钟 idle（测试可覆盖）
 
 function touchStore(store, id) {
   const entry = store.get(id);

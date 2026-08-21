@@ -1,6 +1,6 @@
 {
   "name": "file-organizer",
-  "version": "0.3.3",
+  "version": "0.3.5",
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
@@ -8,7 +8,9 @@
     "test:smoke": "node test/smoke.js",
     "test:integration": "NODE_ENV=test node test/integration.js",
     "test:scenario": "NODE_ENV=test node test/scenario.js",
-    "test:all": "npm run test:smoke && npm run test:integration && npm run test:scenario"
+    "test:e2e": "NODE_ENV=test node test/e2e.js",
+    "test:session-ttl": "node test/session-ttl.js",
+    "test:all": "npm run test:smoke && npm run test:integration && npm run test:scenario && npm run test:e2e && npm run test:session-ttl"
   },
   "keywords": [
     "file-organizer",
@@ -18,5 +20,7 @@
   ],
   "author": "BananaSoldier01",
   "license": "MIT",
-  "dependencies": {}
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
 }

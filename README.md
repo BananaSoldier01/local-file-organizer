@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.3.4 · Plan Integrity & Interaction Consistency · 个人测试项目。
+> V0.3.5 · UI Runtime & Race Hardening · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -74,6 +74,25 @@ node server.js
 - Node.js HTTP 服务器（零依赖）
 - 原生 fs 模块
 - 纯 HTML/CSS/JS（无框架）
+
+## V0.3.5 变化（UI Runtime & Race Hardening）
+
+核心原则：**What you review is exactly what gets executed.**
+
+- **Plan Revision 模型**：`desiredRevision` / `appliedRevision` / `pendingRevision` 三段式状态，Last Write Wins
+- **Regenerate Race 修复**：stale 响应自动丢弃，立即补发最新 revision；连续快速修改最终状态正确
+- **Execute Revision Guard**：仅在 `appliedRevision === desiredRevision && pendingRevision === 0` 时可点击
+- **Execute 稳定快照**：执行期间使用 `executePlanId` / `executeRevision` 不可变引用，不依赖 mutable state
+- **Browser E2E（Playwright）**：真实浏览器覆盖 Scan → Review → Edit → Exclude → Execute → Undo 完整主路径
+- **Runtime Error 监听**：E2E 监听 `pageerror` / console error / failed network request，任何异常即测试失败
+- **Session Idle TTL 可测试化**：`SESSION_IDLE_TTL_MS` 环境变量覆盖，默认 30min，测试用 500ms
+- **Session TTL 自动测试**：touch 延长生命周期 + idle 后过期，5/5 通过
+- **Target Root UI 收紧**：标签改为"整理到当前文件夹下"，前端校验目标必须在 Scan Root 内
+- **duplicate classifyCancel 清理**：删除旧版 `{ classifyId }` 实现，统一使用 `{ id: classifyId }`
+- **path.dirname 补全**：Browser 环境 `path` 对象新增 `dirname` 方法，修复 `path.dirname is not a function`
+- **showState('done') 修复**：执行完成后正确切换到 Done 状态
+- **GitHub Actions CI**：`.github/workflows/test.yml` 自动运行全部测试
+- **测试总数**：114/114 通过（smoke 11 + integration 43 + scenario 41 + e2e 14 + session-ttl 5）
 
 ## V0.3.4 变化（Plan Integrity & Interaction Consistency）
 

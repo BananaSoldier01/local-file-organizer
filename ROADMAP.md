@@ -4,7 +4,26 @@
 
 ---
 
-## 当前阶段：V0.3.4 — Plan Integrity & Interaction Consistency
+## 当前阶段：V0.3.5 — UI Runtime & Race Hardening ✅
+
+V0.3.5 聚焦于建立浏览器级可验证的用户主路径。核心原则：**What you review is exactly what gets executed.**
+
+### V0.3.5 — UI Runtime & Race Hardening ✅
+
+- Plan Revision 模型（desiredRevision / appliedRevision / pendingRevision）
+- Regenerate Race 修复（Last Write Wins / stale 响应丢弃）
+- Execute Revision Guard（仅最新 Revision 已应用时可点击）
+- Execute 稳定快照（executePlanId / executeRevision 不可变引用）
+- Browser E2E（Playwright）完整主路径覆盖
+- Runtime Error 监听（pageerror / console error / failed request）
+- Session Idle TTL 可测试化 + 自动测试
+- Target Root UI 收紧 + 前端校验
+- duplicate classifyCancel 清理
+- path.dirname 补全（Browser 环境）
+- showState('done') 修复
+- GitHub Actions CI
+
+## 当前阶段：V0.3.4 — Plan Integrity & Interaction Consistency ✅
 
 V0.3.4 聚焦于建立唯一、可信的 **Scan Session → User Review → Trusted Plan → Execute** 链路。核心原则：**What you review is exactly what gets executed.**
 

@@ -358,6 +358,126 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════
+  // Scenario I — Rapid Target Edit (Last Write Wins)
+  // ═══════════════════════════════════════════════
+  console.log('\nI. Rapid Target Edit (Last Write Wins):');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scnI-'));
+    setupFiles(root, 2, 'ifile');
+    const { scanId, scanData } = await scanAndWait(root);
+    const classified = await classifyAndWait(scanData.files);
+
+    // 连续发送 3 个不同 target 的 plan 请求（模拟用户快速修改）
+    const target1 = path.join(root, '目标1');
+    const target2 = path.join(root, '目标2');
+    const target3 = path.join(root, '目标3');
+
+    // 并发发送三个请求，最后一个（target3）应该最终胜出
+    const [r1, r2, r3] = await Promise.all([
+      api('POST', '/api/plan', { files: classified, options: { targetRoot: target1 }, scanId }),
+      api('POST', '/api/plan', { files: classified, options: { targetRoot: target2 }, scanId }),
+      api('POST', '/api/plan', { files: classified, options: { targetRoot: target3 }, scanId }),
+    ]);
+
+    // 三个请求都应该成功
+    check(r1.status === 200 && r2.status === 200 && r3.status === 200,
+      `三个 plan 请求均成功 (${r1.status}/${r2.status}/${r3.status})`);
+
+    // 执行最后一个 plan（target3）
+    const lastPlanId = r3.data.data.planId;
+    const { result } = await executeAndWait(lastPlanId);
+    check(result.successCount === 2, `执行移动 2 个文件 (实际: ${result.successCount})`);
+
+    // 验证文件最终在 target3，不在 target1 或 target2
+    const firstFile = scanData.files[0];
+    const inTarget3 = fs.existsSync(path.join(target3, '文档', firstFile.name));
+    const inTarget1 = fs.existsSync(path.join(target1, '文档', firstFile.name));
+    const inTarget2 = fs.existsSync(path.join(target2, '文档', firstFile.name));
+    check(inTarget3, `文件在目标3: ${target3}`);
+    check(!inTarget1, `文件不在目标1: ${target1}`);
+    check(!inTarget2, `文件不在目标2: ${target2}`);
+
+    safeRm(root);
+  }
+
+  // ═══════════════════════════════════════════════
+  // Scenario J — Edit + Exclude Race
+  // ═══════════════════════════════════════════════
+  console.log('\nJ. Edit + Exclude Race:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scnJ-'));
+    setupFiles(root, 3, 'jfile');
+    const { scanId, scanData } = await scanAndWait(root);
+    const classified = await classifyAndWait(scanData.files);
+
+    // 同时发起：修改 target + 排除一个文件
+    const newTarget = path.join(root, '新目标');
+    const excludedFile = classified[1].path;
+
+    const [editRes, excludeRes] = await Promise.all([
+      api('POST', '/api/plan', {
+        files: classified,
+        options: { targetRoot: newTarget },
+        scanId,
+      }),
+      api('POST', '/api/plan', {
+        files: classified.filter(f => f.path !== excludedFile),
+        options: { targetRoot: newTarget },
+        scanId,
+      }),
+    ]);
+
+    check(editRes.status === 200 && excludeRes.status === 200,
+      `编辑和排除请求均成功 (${editRes.status}/${excludeRes.status})`);
+
+    // 执行排除版本的 plan（排除请求后发，应该胜出）
+    const excludePlanId = excludeRes.data.data.planId;
+    const { result } = await executeAndWait(excludePlanId);
+    check(result.successCount === 2, `排除后执行 2 个文件 (实际: ${result.successCount})`);
+    check(fs.existsSync(excludedFile), `被排除文件未移动: ${excludedFile}`);
+
+    safeRm(root);
+  }
+
+  // ═══════════════════════════════════════════════
+  // Scenario K — Exclude → Restore Rapidly
+  // ═══════════════════════════════════════════════
+  console.log('\nK. Exclude → Restore Rapidly:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scnK-'));
+    setupFiles(root, 3, 'kfile');
+    const { scanId, scanData } = await scanAndWait(root);
+    const classified = await classifyAndWait(scanData.files);
+
+    const excludedFile = classified[1].path;
+    const target = path.join(root, '目标');
+
+    // 先发送排除请求
+    const excludeRes = await api('POST', '/api/plan', {
+      files: classified.filter(f => f.path !== excludedFile),
+      options: { targetRoot: target },
+      scanId,
+    });
+    check(excludeRes.status === 200, `排除请求成功`);
+
+    // 立即发送恢复请求（全部文件）
+    const restoreRes = await api('POST', '/api/plan', {
+      files: classified,
+      options: { targetRoot: target },
+      scanId,
+    });
+    check(restoreRes.status === 200, `恢复请求成功`);
+
+    // 执行恢复版本的 plan
+    const restorePlanId = restoreRes.data.data.planId;
+    const { result } = await executeAndWait(restorePlanId);
+    check(result.successCount === 3, `恢复后执行 3 个文件 (实际: ${result.successCount})`);
+    check(!fs.existsSync(excludedFile), `恢复后文件已移动: ${excludedFile}`);
+
+    safeRm(root);
+  }
+
+  // ═══════════════════════════════════════════════
   // Cleanup
   // ═══════════════════════════════════════════════
 

@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke tests
+        run: npm run test:smoke
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Scenario tests
+        run: npm run test:scenario
+
+      - name: Session TTL tests
+        run: npm run test:session-ttl
+
+      - name: Browser E2E tests
+        run: npm run test:e2e

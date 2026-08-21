@@ -42,7 +42,6 @@ const API = {
   classify(files, config) { return this.post('/api/classify', { files, config }); },
   classifyProgress(classifyId) { return this.get('/api/classify-progress?classifyId=' + encodeURIComponent(classifyId)); },
   classifyResult(classifyId) { return this.get('/api/classify-result?classifyId=' + encodeURIComponent(classifyId)); },
-  classifyCancel(classifyId) { return this.post('/api/classify-cancel', { classifyId }); },
   generatePlan(files, options) { return this.post('/api/plan', { files, options: { targetRoot: options?.targetRoot }, scanId: options?.scanId }); },
   executePlan(opts) { return this.post('/api/execute', { planId: opts?.planId, conflictStrategy: opts?.conflictStrategy }); },
   executeProgress(execId) { return this.get('/api/execute-progress?execId=' + encodeURIComponent(execId)); },
@@ -61,6 +60,7 @@ const API = {
 // ── 路径工具 ──────────────────────────────────────────────
 const path = {
   basename: (p) => { if (!p) return ''; const parts = p.split('/'); return parts[parts.length - 1]; },
+  dirname: (p) => { if (!p) return ''; const parts = p.split('/'); parts.pop(); return parts.join('/') || '/'; },
   extname: (p) => { const parts = p.split('.'); return parts.length > 1 ? '.' + parts[parts.length - 1] : ''; },
 };
 
@@ -104,9 +104,10 @@ const state = {
   plan: null,          // 整理方案
   scanId: null,        // 当前可信 Scan Session ID
   planId: null,        // 当前可信 Plan ID
-  planRevision: 0,     // Plan 版本号，每次 regenerate 递增
-  planDirty: false,    // true = UI 已修改但 Plan 未重新生成
-  regenerating: false, // regeneratePlan 进行中
+  // ── Plan Revision 模型（Last Write Wins） ──
+  desiredRevision: 0,  // 用户最新意图的版本号（每次影响 Plan 的修改 +1）
+  appliedRevision: 0,  // 已同步到服务器并应用到 UI 的版本号
+  pendingRevision: 0,  // 正在请求中的 revision（0 = 无待决请求）
   currentFolder: null,
   selectedFiles: new Set(),   // 用户选中的文件（用于批量操作）
   excludedFiles: new Set(),   // 排除的文件路径（不参与整理）
@@ -291,7 +292,20 @@ function bindEvents() {
   $('btn-exclude-selected').addEventListener('click', excludeSelected);
 
   $('custom-target-input').addEventListener('change', (e) => {
-    state.customTargetRoot = e.target.value.trim() || null;
+    const val = e.target.value.trim();
+    state.customTargetRoot = val || null;
+
+    // 前端校验：目标必须在 Scan Root 内
+    if (val && state.currentFolder) {
+      const targetPath = path.resolve(state.currentFolder, val);
+      const scanRoot = path.resolve(state.currentFolder);
+      if (!targetPath.startsWith(scanRoot + path.sep) && targetPath !== scanRoot) {
+        toast('整理目标必须在扫描根目录内', 'error');
+        e.target.value = '';
+        state.customTargetRoot = null;
+        return;
+      }
+    }
     regeneratePlan();
   });
 
@@ -440,10 +454,11 @@ async function startScan(folderPath) {
       targetRoot: state.customTargetRoot,
       scanId: state.scanId,
     });
-    state.plan = planResult.data;
-    state.planId = planResult.data.planId;
-    state.planRevision = 1;
-    state.planDirty = false;
+    // 使用 Revision 模型初始化
+    state.desiredRevision = 1;
+    state.appliedRevision = 1;
+    state.pendingRevision = 0;
+    applyPlanResponse(1, planResult.data);
 
     // 6. 更新 UI
     updateSidebarStats();
@@ -548,16 +563,8 @@ function renderWorkspace() {
     .reduce((s, m) => s + (m.size || 0), 0) : 0;
 
   updateFooter(files.length, moveCount, moveSize);
-  // Execute 按钮状态：有 move 且未在重新生成时才可点击
-  const canExecute = moveCount > 0 && !state.regenerating && !state.planDirty;
-  $('btn-execute').disabled = !canExecute;
-  if (state.regenerating) {
-    $('btn-execute').title = '正在更新整理方案…';
-  } else if (state.planDirty) {
-    $('btn-execute').title = '方案已修改，正在更新…';
-  } else {
-    $('btn-execute').title = '';
-  }
+  // Execute 按钮状态由 Revision 模型统一控制
+  updateExecuteBtnState();
   updateSelectionUI();
 }
 
@@ -758,26 +765,32 @@ function updateSelectionUI() {
   if (btn) btn.textContent = '排除选中' + (count > 0 ? ' (' + count + ')' : '');
 }
 
-// ── 重新生成方案 ──────────────────────────────────────────
+// ── 重新生成方案（Last Write Wins / Latest Revision Wins） ──
 async function regeneratePlan() {
-  if (state.regenerating) return; // 防抖：避免并发请求
   if (!state.scanId) return;      // 无 scanId 不生成可信 Plan
 
-  state.regenerating = true;
-  state.planDirty = true;
-  // 禁用 Execute 按钮，防止用户在 Plan 更新期间执行
-  const execBtns = [$('btn-execute'), $('btn-execute-bottom')];
-  execBtns.forEach(b => { if (b) b.disabled = true; });
+  // 每次影响最终 Plan 的用户修改都递增 desiredRevision
+  state.desiredRevision++;
+  const thisRevision = state.desiredRevision;
+
+  // 如果已有请求在进行，不发新请求（避免并发浪费）
+  // 但记录 pending 状态，已有请求返回后会自动检查并补发
+  const hasPending = state.pendingRevision > 0;
+  if (hasPending) {
+    // 已有请求处理更旧的 revision，标记为 superseded
+    // 该请求返回后会在 handlePlanResponse 中发现 requestRevision < desiredRevision 并补发
+    return;
+  }
+
+  // 启动新请求
+  state.pendingRevision = thisRevision;
+  disableExecuteBtn(true, '正在更新整理方案…');
 
   try {
     // 过滤已排除文件，只将有效文件发送给服务器
     const effectiveFiles = state.classifiedFiles.filter(f => !state.excludedFiles.has(f.path));
     if (effectiveFiles.length === 0) {
-      state.plan = { moves: [], conflicts: [], summary: {}, targetRoot: null };
-      state.planId = null;
-      state.planRevision++;
-      state.planDirty = false;
-      renderWorkspace();
+      applyPlanResponse(thisRevision, { moves: [], conflicts: [], summary: {}, targetRoot: null, planId: null });
       return;
     }
 
@@ -786,34 +799,84 @@ async function regeneratePlan() {
       scanId: state.scanId,
     });
 
-    // 原子更新：plan + planId 同时替换
-    state.plan = result.data;
-    state.planId = result.data.planId;
-    state.planRevision++;
-    state.planDirty = false;
-    renderWorkspace();
+    handlePlanResponse(thisRevision, result.data);
   } catch (err) {
     console.warn('[plan] 重新生成失败:', err.message);
     toast('方案更新失败，保留上一次有效方案', 'error');
-    // 保留旧 plan，不置空
-  } finally {
-    state.regenerating = false;
-    // 重新渲染以恢复 Execute 按钮状态
-    renderWorkspace();
+    // 失败时清除 pending，允许重试
+    if (state.pendingRevision === thisRevision) {
+      state.pendingRevision = 0;
+      disableExecuteBtn(false);
+      updateExecuteBtnState();
+    }
   }
+}
+
+/**
+ * 处理 regeneratePlan 响应 —— Last Write Wins 核心逻辑
+ *
+ * @param {number} requestRevision  发出请求时的 desiredRevision
+ * @param {object} planData         服务器返回的 plan 数据（含 planId）
+ */
+function handlePlanResponse(requestRevision, planData) {
+  // 清除 pending 标记
+  state.pendingRevision = 0;
+
+  if (requestRevision < state.desiredRevision) {
+    // 情况 B：用户期间又修改了，丢弃 stale 响应
+    // 立即补发最新 revision
+    regeneratePlan();
+    return;
+  }
+
+  // 情况 A：这是最新状态，接受
+  applyPlanResponse(requestRevision, planData);
+}
+
+function applyPlanResponse(revision, planData) {
+  // 原子更新：plan + planId 同时替换
+  state.plan = planData;
+  state.planId = planData.planId || null;
+  state.appliedRevision = revision;
+  disableExecuteBtn(false);
+  updateExecuteBtnState();
+  renderWorkspace();
+}
+
+/**
+ * 禁用 / 启用 Execute 按钮
+ */
+function disableExecuteBtn(disabled, title) {
+  const btns = [$('btn-execute'), $('btn-execute-bottom')];
+  btns.forEach(b => {
+    if (!b) return;
+    b.disabled = disabled;
+    if (disabled) b.title = title || '';
+    else b.title = '';
+  });
+}
+
+/**
+ * 更新 Execute 按钮状态 —— 仅在 Plan 已同步时可点击
+ */
+function updateExecuteBtnState() {
+  const canExecute = state.planId !== null
+    && state.appliedRevision === state.desiredRevision
+    && state.pendingRevision === 0;
+  disableExecuteBtn(!canExecute);
 }
 
 // ── 执行整理 ──────────────────────────────────────────────
 async function executePlan() {
   if (!state.plan) return;
 
-  // Plan Consistency Guard
-  if (state.planDirty) {
-    toast('方案正在更新中，请稍等…', 'warning');
+  // Revision Guard：仅在 Plan 已完全同步时允许 Execute
+  if (state.pendingRevision !== 0) {
+    toast('正在更新整理方案…', 'warning');
     return;
   }
-  if (state.regenerating) {
-    toast('正在更新整理方案…', 'warning');
+  if (state.appliedRevision !== state.desiredRevision) {
+    toast('方案尚未同步，请稍等…', 'warning');
     return;
   }
   if (!state.planId) {
@@ -821,25 +884,17 @@ async function executePlan() {
     return;
   }
 
-  // 服务器 trusted plan 中的 move 数量必须与 UI 有效 move 数量一致
-  const uiMoves = state.plan.moves.filter(m => !state.excludedFiles.has(m.from));
-  if (uiMoves.length === 0) {
+  // 使用统一变量 effectiveMoves，后续所有引用都使用它
+  const effectiveMoves = state.plan.moves.filter(m => !state.excludedFiles.has(m.from));
+  if (effectiveMoves.length === 0) {
     toast('没有需要整理的文件', 'warning');
     return;
   }
 
-  // 一致性检查：UI 有效 move 数 == plan 中非排除 move 数
-  // （排除文件已在 regeneratePlan 时从服务器 plan 中移除，此处为防御性检查）
-  const serverMoves = state.plan.moves;
-  if (serverMoves.length !== state.plan.moves.length) {
-    toast('方案不一致，请重新生成', 'error');
-    return;
-  }
-
-  const totalSize = moves.reduce((s, m) => s + (m.size || 0), 0);
+  const totalSize = effectiveMoves.reduce((s, m) => s + (m.size || 0), 0);
   const confirmed = await showConfirm(
     '开始整理？',
-    `将移动 <strong>${moves.length}</strong> 个文件（共 ${formatSize(totalSize)}）到目标目录。<br><br>` +
+    `将移动 <strong>${effectiveMoves.length}</strong> 个文件（共 ${formatSize(totalSize)}）到目标目录。<br><br>` +
     `此操作可撤销。目标目录: <strong>${state.customTargetRoot || state.currentFolder}</strong>`
   );
   if (!confirmed) return;
@@ -847,22 +902,25 @@ async function executePlan() {
   showState('executing');
   $('execute-progress-fill').style.width = '0%';
   $('execute-text').textContent = '正在整理文件…';
-  $('execute-detail').textContent = '0 / ' + moves.length;
+  $('execute-detail').textContent = '0 / ' + effectiveMoves.length;
 
   try {
-    // 1. 使用 planId 创建异步执行 Job（服务器端可信验证）
+    // 使用稳定快照：执行期间不引用可能变化的 Workspace mutable state
+    const executePlanId = state.planId;
+    const executeRevision = state.appliedRevision;
+
     const createResult = await API.executePlan({
-      planId: state.planId,
+      planId: executePlanId,
       conflictStrategy: state.settings.conflictStrategy || { overwrite: 'skip' },
     });
 
     const execId = createResult.data.execId;
     if (!execId) throw new Error('未获取到 execId');
 
-    // 2. 记录当前 execId，使 Cancel 可用
+    // 记录当前 execId，使 Cancel 可用
     currentExecId = execId;
 
-    // 3. 统一轮询 —— 单个 loop，无硬超时
+    // 统一轮询 —— 单个 loop，无硬超时
     while (true) {
       const prog = await API.job('execute', execId);
       const d = prog.data;
@@ -885,6 +943,7 @@ async function executePlan() {
           (d.skipped > 0 ? `，${d.skipped} 个跳过` : '') +
           (d.status === 'cancelled_partial' ? `（已取消，完成 ${d.completed}/${d.total}）` : '');
         currentExecId = null;
+        showState('done');
         break;
       }
 
@@ -957,9 +1016,9 @@ function newScan() {
   state.plan = null;
   state.scanId = null;
   state.planId = null;
-  state.planRevision = 0;
-  state.planDirty = false;
-  state.regenerating = false;
+  state.desiredRevision = 0;
+  state.appliedRevision = 0;
+  state.pendingRevision = 0;
   state.selectedFiles.clear();
   state.excludedFiles.clear();
   state.customTargetRoot = null;
