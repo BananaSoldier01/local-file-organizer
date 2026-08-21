@@ -80,11 +80,17 @@ function extractEntities(file, summary) {
   }
 
   // 从文件名中提取可能的项目名
+  // V0.4.2.1: 过滤通用缩写（ASCII <= 3 字符的大写词如 "PR" / "AI" / "UI"）
   const nameWithoutExt = path.basename(file.name, path.extname(file.name));
   const nameParts = nameWithoutExt.split(/[-_\s]/);
   for (const part of nameParts) {
-    if (part.length >= 2 && !isCommonWord(part)) {
-      entities.add(part);
+    if (!isCommonWord(part)) {
+      // ASCII 词要求 >= 3 字符，中文词要求 >= 2 字符
+      const isAscii = /^[\x00-\x7f]+$/.test(part);
+      const minLen = isAscii ? 3 : 2;
+      if (part.length >= minLen) {
+        entities.add(part);
+      }
     }
   }
 
@@ -103,8 +109,30 @@ const COMMON_WORDS = new Set([
   'make', 'many', 'over', 'such', 'take', 'them', 'well', 'were',
 ]);
 
+// V0.4.2.1: 文件名中的通用功能词（非项目实体）
+// 这些词在文件名中常见但不表示项目归属
+const FILENAME_FUNCTION_WORDS = new Set([
+  // 中文通用词
+  '需求', '架构', '设计', '测试', '部署', '接口', '会议', '纪要',
+  '模板', '文档', '报告', '指南', '方案', '规范', '标准', '说明',
+  '概要', '总结', '计划', '日程', '议程', '记录', '草案', '初稿',
+  '终稿', '最终版', '最新', '旧版', '备份', '存档', '临时',
+  '功能', '模块', '组件', '页面', '组件', '服务', '系统',
+  '数据库', '配置', '设置', '参数', '选项', '属性',
+  // 英文通用词
+  'design', 'test', 'deploy', 'deployment', 'api', 'interface',
+  'document', 'report', 'template', 'spec', 'guide', 'overview',
+  'summary', 'plan', 'schedule', 'agenda', 'draft', 'final',
+  'version', 'backup', 'archive', 'temp', 'feature', 'module',
+  'component', 'page', 'service', 'system', 'config', 'settings',
+  'database', 'config', 'setup', 'install', 'release', 'build',
+]);
+
 function isCommonWord(word) {
-  return COMMON_WORDS.has(word.toLowerCase());
+  if (!word || typeof word !== 'string') return true;
+  if (COMMON_WORDS.has(word.toLowerCase())) return true;
+  if (FILENAME_FUNCTION_WORDS.has(word)) return true;
+  return false;
 }
 
 function uniqueArray(arr) {

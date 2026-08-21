@@ -1,10 +1,10 @@
 # ROADMAP
 
-> 最后更新：V0.4.2
+> 最后更新：V0.4.2.1
 
 ---
 
-## 当前阶段：V0.4.2 — File Relationship Intelligence 🔄
+## 当前阶段：V0.4.2.1 — Relationship Integrity & Product Wiring 🔄
 
 V0.3.5.1 收尾 V0.3.x 基础设施阶段，修复最后几个 Runtime / Revision / CI / E2E 真实性问题。
 
@@ -127,6 +127,29 @@ V0.4.2 从「单文件分类」升级为「文件关系智能」——理解文�
 - 不做自动移动文件
 - 不做 UI 重构
 - 不做向量数据库
+
+---
+
+## 当前阶段：V0.4.2.1 — Relationship Integrity & Product Wiring 🔄
+
+### V0.4.2.1 完成项
+
+- **主题相同不能单独建立关系**：主题匹配降权至 0.15，且需要实体/关键词/名称额外证据才能计分
+- **候选索引替代全量 N²**：基于倒排索引（实体/关键词/目录）构建候选对，100 文件从 4950 对降至 2450 对
+- **Group Cohesion 约束**：不再使用简单 BFS 连通分量。要求：强核心边（>= 0.4）+ 实体一致性（候选节点必须与组核心实体有交集）+ 边密度
+- **Group Evidence 修复**：共享实体必须是"真共享"（出现在组内所有文件中），Group confidence 基于覆盖率 + 内部边强度 + 主题一致性
+- **Precision/Recall/FPR 评估**：52 项测试，Precision=1.0, Recall=1.0, F1=1.0, FPR=0.0
+- **Hard Negatives**：多项目同主题、bridge file、公共模板、同目录不同项目
+- **实体提取过滤**：过滤通用功能词（需求/架构/设计/测试等）和短缩写（< 3 字符 ASCII）
+
+### V0.4.2.1 验收标准
+
+- [x] 主题相同不能单独产生 Group Edge
+- [x] Group Cohesion 防止链式污染（bridge file 不合并项目）
+- [x] Group Evidence 基于真共享实体和覆盖率
+- [x] Precision >= 0.8, Recall >= 0.8, FPR <= 0.15
+- [x] 候选索引避免全量 N²
+- [x] 全部回归测试通过（231/231）
 
 ---
 

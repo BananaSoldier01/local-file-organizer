@@ -1,12 +1,12 @@
 /**
- * relationship.js — 文件关系评估测试 (V0.4.2)
+ * relationship.js — 文件关系评估测试 (V0.4.2.1)
  *
- * 测试三个场景：
- * 1. 同一项目文件（应分组）
- * 2. 不同主题文件（不应分组）
- * 3. 弱文件名但同实体（应分组）
- *
- * 使用真实 buildRelationshipGraph()，不复制逻辑。
+ * V0.4.2.1 核心修复：
+ * - 真正的 Precision / Recall / False Positive 评估
+ * - Hard Negatives：多项目同主题、bridge file、公共模板
+ * - 候选索引性能验证
+ * - Group Cohesion 约束验证
+ * - 每个数据集使用唯一实体名，避免跨数据集假关联
  */
 
 const fs = require('fs');
@@ -24,235 +24,402 @@ function check(cond, label) {
   else { failed++; console.log(`  ✗ ${label}`); }
 }
 
-// ── 测试数据 ────────────────────────────────────────────────
+// ── 测试数据集 ──────────────────────────────────────────────
+// 每个数据集使用唯一的实体名，避免跨数据集假关联
 
-/**
- * 场景 1: 同一项目文件
- * 三个文件属于同一项目，共享实体和主题。
- */
-const SAME_PROJECT_FILES = [
-  {
-    name: '项目A_需求文档.md',
-    content: '# 项目A需求文档\n\n## 功能\n- 用户登录\n- 权限管理\n\n## 技术栈\nReact + Node.js',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A需求文档',
-      summary: '项目A的需求分析文档，包含功能列表和技术栈选择。',
-      keywords: ['项目A', '需求', '登录', '权限', 'React', 'Node.js'],
-      entities: ['项目A', 'React', 'Node.js'],
-      confidence: 0.9,
-      method: 'local-rules',
+const DATASET = {
+  // ── 正例：项目Alpha（3 个文件，共享实体 alpha） ──
+  groupAlpha: [
+    {
+      name: 'Alpha_需求文档.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha需求文档',
+        summary: 'Alpha项目的需求分析文档，包含功能列表和技术栈选择。',
+        keywords: ['Alpha', '需求', '登录', '权限', 'React', 'Node.js'],
+        entities: ['Alpha', 'React', 'Node.js'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '项目A_设计稿.md',
-    content: '# 项目A UI设计稿\n\n## 页面\n- 首页\n- 登录页\n\n## 组件\nButton, Modal',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A设计稿',
-      summary: '项目A的UI设计规范，包含页面和组件设计。',
-      keywords: ['项目A', '设计', 'UI', 'Button', 'Modal'],
-      entities: ['项目A', 'Button', 'Modal'],
-      confidence: 0.9,
-      method: 'local-rules',
+    {
+      name: 'Alpha_设计稿.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha设计稿',
+        summary: 'Alpha项目的UI设计规范，包含页面和组件设计。',
+        keywords: ['Alpha', '设计', 'UI', 'Button', 'Modal'],
+        entities: ['Alpha', 'Button', 'Modal'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '项目A_测试报告.md',
-    content: '# 项目A测试报告\n\n## 结果\n- 通过: 95%\n- 失败: 5%\n\n## 覆盖\n登录、权限、首页',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A测试报告',
-      summary: '项目A的测试结果，覆盖登录和权限模块。',
-      keywords: ['项目A', '测试', '登录', '权限'],
-      entities: ['项目A'],
-      confidence: 0.9,
-      method: 'local-rules',
+    {
+      name: 'Alpha_测试报告.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha测试报告',
+        summary: 'Alpha项目的测试结果，覆盖登录和权限模块。',
+        keywords: ['Alpha', '测试', '登录', '权限'],
+        entities: ['Alpha'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-];
+  ],
 
-/**
- * 场景 2: 不同主题文件
- * 三个文件属于完全不同的主题。
- */
-const DIFFERENT_THEME_FILES = [
-  {
-    name: '会议纪要.md',
-    content: '# 会议纪要\n\n## 时间\n2026年7月1日\n\n## 参与人\n张三、李四',
-    contentTheme: '会议',
-    contentSummary: {
-      title: '会议纪要',
-      summary: '团队会议记录，讨论项目进度和预算分配。',
-      keywords: ['会议', '纪要', '进度', '预算'],
-      entities: ['张三', '李四'],
-      confidence: 0.9,
-      method: 'local-rules',
+  // ── 正例：项目Beta（3 个文件，共享实体 beta） ──
+  groupBeta: [
+    {
+      name: 'Beta_架构设计.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Beta架构设计',
+        summary: 'Beta项目的系统架构设计文档。',
+        keywords: ['Beta', '架构', '微服务', '数据库'],
+        entities: ['Beta', '微服务'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '食谱.md',
-    content: '# 番茄炒蛋食谱\n\n## 材料\n- 番茄 2个\n- 鸡蛋 3个\n\n## 步骤\n1. 切番茄',
-    contentTheme: '食谱',
-    contentSummary: {
-      title: '番茄炒蛋食谱',
-      summary: '家常菜番茄炒蛋的做法，简单易学。',
-      keywords: ['番茄', '鸡蛋', '食谱', '炒蛋'],
-      entities: ['番茄', '鸡蛋'],
-      confidence: 0.9,
-      method: 'local-rules',
+    {
+      name: 'Beta_接口文档.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Beta接口文档',
+        summary: 'Beta项目的API接口文档。',
+        keywords: ['Beta', 'API', '接口', 'REST'],
+        entities: ['Beta'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '旅行计划.md',
-    content: '# 日本旅行计划\n\n## 行程\n- Day1: 东京\n- Day2: 京都\n\n## 预算\n机票 3000, 住宿 5000',
-    contentTheme: '旅行',
-    contentSummary: {
-      title: '日本旅行计划',
-      summary: '日本东京京都旅行行程和预算规划。',
-      keywords: ['日本', '旅行', '东京', '京都', '预算'],
-      entities: ['东京', '京都'],
-      confidence: 0.9,
-      method: 'local-rules',
+    {
+      name: 'Beta_部署指南.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Beta部署指南',
+        summary: 'Beta项目的部署和运维指南。',
+        keywords: ['Beta', '部署', 'Docker', 'K8s'],
+        entities: ['Beta', 'Docker'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
     },
-  },
-];
+  ],
 
-/**
- * 场景 3: 弱文件名但同实体
- * 文件名没有明确主题，但内容共享实体。
- */
-const WEAK_FILENAME_FILES = [
-  {
-    name: '新建文档1.txt',
-    content: '项目A的最新进展：完成了用户登录模块的开发，下一步是权限管理。',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A进展',
-      summary: '项目A最新进展，完成登录模块，下一步权限管理。',
-      keywords: ['项目A', '登录', '权限'],
-      entities: ['项目A'],
-      confidence: 0.85,
-      method: 'local-rules',
+  // ── 正例：弱文件名但同实体（Alpha） ──
+  weakFilenameAlpha: [
+    {
+      name: '新建文档1.txt',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha进展',
+        summary: 'Alpha最新进展，完成登录模块，下一步权限管理。',
+        keywords: ['Alpha', '登录', '权限'],
+        entities: ['Alpha'],
+        confidence: 0.85,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '新建文档2.txt',
-    content: '项目A的UI设计评审：首页和登录页的组件设计已通过，Button和Modal组件符合规范。',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A设计评审',
-      summary: '项目A UI设计评审，首页和登录页组件通过审核。',
-      keywords: ['项目A', 'UI', 'Button', 'Modal'],
-      entities: ['项目A', 'Button', 'Modal'],
-      confidence: 0.85,
-      method: 'local-rules',
+    {
+      name: '新建文档2.txt',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha设计评审',
+        summary: 'Alpha UI设计评审，首页和登录页组件通过审核。',
+        keywords: ['Alpha', 'UI', 'Button'],
+        entities: ['Alpha', 'Button'],
+        confidence: 0.85,
+        method: 'local-rules',
+      },
     },
-  },
-  {
-    name: '资料1.txt',
-    content: '项目A的测试覆盖率报告：登录和权限模块覆盖率达95%。',
-    contentTheme: '项目',
-    contentSummary: {
-      title: '项目A测试报告',
-      summary: '项目A测试覆盖率报告，登录和权限模块覆盖率达95%。',
-      keywords: ['项目A', '测试', '登录', '权限'],
-      entities: ['项目A'],
-      confidence: 0.85,
-      method: 'local-rules',
+    {
+      name: '资料1.txt',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha测试报告',
+        summary: 'Alpha测试覆盖率报告，登录和权限模块覆盖率达95%。',
+        keywords: ['Alpha', '测试', '登录', '权限'],
+        entities: ['Alpha'],
+        confidence: 0.85,
+        method: 'local-rules',
+      },
     },
-  },
-];
+  ],
+
+  // ── Hard Negative 1: 多项目同主题（Gamma 和 Delta，theme=项目，实体不同） ──
+  multiProjectSameTheme: [
+    {
+      name: 'Gamma_需求文档.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Gamma需求文档',
+        summary: 'Gamma项目的需求分析文档。',
+        keywords: ['Gamma', '需求', '登录'],
+        entities: ['Gamma'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: 'Delta_架构设计.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Delta架构设计',
+        summary: 'Delta项目的系统架构设计文档。',
+        keywords: ['Delta', '架构', '微服务'],
+        entities: ['Delta', '微服务'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+  ],
+
+  // ── Hard Negative 2: Bridge File（桥接 Gamma 和 Delta） ──
+  bridgeFile: [
+    {
+      name: 'Gamma_需求文档.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Gamma需求文档',
+        summary: 'Gamma项目的需求分析文档。',
+        keywords: ['Gamma', '需求', '登录'],
+        entities: ['Gamma'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: '跨项目会议纪要.md',
+      contentTheme: '会议',
+      contentSummary: {
+        title: '跨项目会议纪要',
+        summary: 'Gamma和Delta的联合会议记录，讨论了接口对接方案。',
+        keywords: ['Gamma', 'Delta', '会议', '接口'],
+        entities: ['Gamma', 'Delta'],
+        confidence: 0.85,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: 'Delta_架构设计.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Delta架构设计',
+        summary: 'Delta项目的系统架构设计文档。',
+        keywords: ['Delta', '架构', '微服务'],
+        entities: ['Delta', '微服务'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+  ],
+
+  // ── Hard Negative 3: 公共模板（无项目实体） ──
+  publicTemplates: [
+    {
+      name: '会议纪要模板.md',
+      contentTheme: '模板',
+      contentSummary: {
+        title: '会议纪要模板',
+        summary: '通用会议纪要模板，包含时间、参与人、议题等字段。',
+        keywords: ['会议', '纪要', '模板', '时间'],
+        entities: [],
+        confidence: 0.7,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: '需求文档模板.md',
+      contentTheme: '模板',
+      contentSummary: {
+        title: '需求文档模板',
+        summary: '通用需求文档模板，包含功能、非功能、验收标准等字段。',
+        keywords: ['需求', '文档', '模板', '功能'],
+        entities: [],
+        confidence: 0.7,
+        method: 'local-rules',
+      },
+    },
+  ],
+
+  // ── Hard Negative 4: 同目录但不同项目（Epsilon 和 Zeta） ──
+  sameDirDifferentProject: [
+    {
+      name: 'Epsilon_需求文档.md',
+      contentTheme: '项目',
+      dir: '工作/项目',
+      contentSummary: {
+        title: 'Epsilon需求文档',
+        summary: 'Epsilon项目的需求分析文档。',
+        keywords: ['Epsilon', '需求'],
+        entities: ['Epsilon'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: 'Zeta_架构设计.md',
+      contentTheme: '项目',
+      dir: '工作/项目',
+      contentSummary: {
+        title: 'Zeta架构设计',
+        summary: 'Zeta项目的系统架构设计文档。',
+        keywords: ['Zeta', '架构'],
+        entities: ['Zeta'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+  ],
+
+  // ── Hard Negative 5: 不同主题文件 ──
+  differentThemes: [
+    {
+      name: '会议纪要.md',
+      contentTheme: '会议',
+      contentSummary: {
+        title: '会议纪要',
+        summary: '团队会议记录。',
+        keywords: ['会议', '纪要'],
+        entities: [],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: '食谱.md',
+      contentTheme: '食谱',
+      contentSummary: {
+        title: '番茄炒蛋食谱',
+        summary: '家常菜番茄炒蛋的做法。',
+        keywords: ['番茄', '鸡蛋', '食谱'],
+        entities: [],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: '旅行计划.md',
+      contentTheme: '旅行',
+      contentSummary: {
+        title: '日本旅行计划',
+        summary: '日本东京京都旅行行程。',
+        keywords: ['日本', '旅行', '东京'],
+        entities: [],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+  ],
+};
+
+// ── Ground Truth 映射 ──────────────────────────────────────
+// file name → expected group label
+const GROUND_TRUTH = {};
+for (const f of DATASET.groupAlpha) GROUND_TRUTH[f.name] = 'Alpha';
+for (const f of DATASET.groupBeta) GROUND_TRUTH[f.name] = 'Beta';
+for (const f of DATASET.weakFilenameAlpha) GROUND_TRUTH[f.name] = 'Alpha';
 
 // ── 测试执行 ────────────────────────────────────────────────
 
-console.log('\n=== V0.4.2 文件关系评估测试 ===\n');
+console.log('\n=== V0.4.2.1 文件关系评估测试 ===\n');
 
-// ── 测试 1: 同一项目文件 ──
-console.log('测试 1: 同一项目文件分组\n');
+// ── 测试 1: 同一项目文件分组 (Group Alpha) ──
+console.log('测试 1: 同一项目文件分组 (Alpha)\n');
 {
-  const result = relationship.buildRelationshipGraph(SAME_PROJECT_FILES);
+  const result = relationship.buildRelationshipGraph(DATASET.groupAlpha);
 
-  // 应该只有 1 个组（所有文件连通）
   check(result.stats.groups === 1, `所有文件应在同一组 (实际: ${result.stats.groups} 组)`);
 
-  // 每个组应包含 3 个文件
   const group = result.groups[0];
-  check(group.length === 3, `分组包含 3 个文件 (实际: ${group.length})`);
-
-  // 分组建议名应包含项目A
-  const analysis = relationship.analyzeGroup(group, result.fingerprints);
-  check(
-    analysis.suggestedName.includes('项目A') || analysis.suggestedName === '项目',
-    `分组建议名包含项目标识: "${analysis.suggestedName}"`
-  );
-
-  // 置信度应较高
-  check(analysis.confidence >= 0.5, `分组置信度 >= 0.5 (实际: ${analysis.confidence})`);
-
-  // 边数应 >= 2（3个文件至少2条边才能连通）
-  check(result.stats.totalEdges >= 2, `边数 >= 2 (实际: ${result.stats.totalEdges})`);
-
-  // 相似度证据应包含主题匹配
-  const hasThemeEvidence = result.groups.length > 0 && result.groups[0].length > 1;
-  check(hasThemeEvidence, '分组包含多个文件');
+  check(group.files.length === 3, `分组包含 3 个文件 (实际: ${group.files.length})`);
+  check(group.coreEntities.includes('Alpha'), `核心实体包含 Alpha: ${JSON.stringify(group.coreEntities)}`);
+  check(group.cohesion >= 0.5, `组凝聚力 >= 0.5 (实际: ${group.cohesion})`);
 }
 
-// ── 测试 2: 不同主题文件 ──
+// ── 测试 2: 不同主题文件不应分组 ──
 console.log('\n测试 2: 不同主题文件不应分组\n');
 {
-  const result = relationship.buildRelationshipGraph(DIFFERENT_THEME_FILES);
+  const result = relationship.buildRelationshipGraph(DATASET.differentThemes);
 
-  // 3个不同主题的文件应分为 3 个独立组
   check(result.stats.groups === 3, `不同主题应分为 3 组 (实际: ${result.stats.groups} 组)`);
-
-  // 不应有边（无相似性）
   check(result.stats.totalEdges === 0, `不同主题间无边 (实际: ${result.stats.totalEdges} 条边)`);
-
-  // 每组只有 1 个文件
   for (const group of result.groups) {
-    check(group.length === 1, `每组只有 1 个文件 (实际: ${group.length})`);
+    check(group.files.length === 1, `每组只有 1 个文件 (实际: ${group.files.length})`);
   }
 }
 
 // ── 测试 3: 弱文件名但同实体 ──
 console.log('\n测试 3: 弱文件名但同实体应分组\n');
 {
-  const result = relationship.buildRelationshipGraph(WEAK_FILENAME_FILES);
+  const result = relationship.buildRelationshipGraph(DATASET.weakFilenameAlpha);
 
-  // 三个文件共享实体"项目A"，应分到同一组
   check(result.stats.groups === 1, `共享实体应分为 1 组 (实际: ${result.stats.groups} 组)`);
-
   const group = result.groups[0];
-  check(group.length === 3, `分组包含 3 个文件 (实际: ${group.length})`);
-
-  // 分组建议名应包含项目A
-  const analysis = relationship.analyzeGroup(group, result.fingerprints);
-  check(
-    analysis.suggestedName.includes('项目A') || analysis.suggestedName === '项目',
-    `分组建议名包含项目标识: "${analysis.suggestedName}"`
-  );
-
-  // 至少有一条边（实体匹配）
-  check(result.stats.totalEdges >= 2, `实体匹配产生边 (实际: ${result.stats.totalEdges} 条边)`);
+  check(group.files.length === 3, `分组包含 3 个文件 (实际: ${group.files.length})`);
+  check(group.coreEntities.includes('Alpha'), `核心实体包含 Alpha: ${JSON.stringify(group.coreEntities)}`);
 }
 
-// ── 测试 4: 候选过滤性能 ──
-console.log('\n测试 4: 候选过滤性能\n');
+// ── 测试 4: Hard Negative — 多项目同主题 ──
+console.log('\n测试 4: Hard Negative — 多项目同主题不应分组\n');
 {
-  // 生成大量文件（模拟真实场景）
-  // 50 个项目A文件 + 50 个会议纪要文件，文件名反映主题
+  const result = relationship.buildRelationshipGraph(DATASET.multiProjectSameTheme);
+
+  // Gamma 和 Delta 都是 theme=项目，但实体完全不同
+  check(result.stats.groups === 2, `不同项目应分为 2 组 (实际: ${result.stats.groups} 组)`);
+  check(result.stats.totalEdges === 0, `不同项目间无边 (实际: ${result.stats.totalEdges} 条边)`);
+}
+
+// ── 测试 5: Hard Negative — Bridge File ──
+console.log('\n测试 5: Hard Negative — Bridge File 不应合并项目\n');
+{
+  const result = relationship.buildRelationshipGraph(DATASET.bridgeFile);
+
+  // Bridge file 同时提到 Gamma 和 Delta
+  // 不应将两个项目合并为一个组
+  const largeGroups = result.groups.filter(g => g.files.length >= 3);
+  check(largeGroups.length === 0, `不应形成 3+ 文件大组 (实际: ${largeGroups.length} 个)`);
+
+  for (const group of result.groups) {
+    const hasGamma = group.files.some(f => f.includes('Gamma'));
+    const hasDelta = group.files.some(f => f.includes('Delta'));
+    check(!(hasGamma && hasDelta), `组不应同时包含Gamma和Delta: ${JSON.stringify(group.files)}`);
+  }
+}
+
+// ── 测试 6: Hard Negative — 公共模板 ──
+console.log('\n测试 6: Hard Negative — 公共模板不应分组\n');
+{
+  const result = relationship.buildRelationshipGraph(DATASET.publicTemplates);
+
+  check(result.stats.groups === 2, `公共模板应分为 2 组 (实际: ${result.stats.groups} 组)`);
+  check(result.stats.totalEdges === 0, `公共模板间无边 (实际: ${result.stats.totalEdges} 条边)`);
+}
+
+// ── 测试 7: Hard Negative — 同目录不同项目 ──
+console.log('\n测试 7: Hard Negative — 同目录但不同项目不应分组\n');
+{
+  const result = relationship.buildRelationshipGraph(DATASET.sameDirDifferentProject);
+
+  // 同目录 + 同主题，但实体完全不同 → 不应分组
+  check(result.stats.groups === 2, `同目录不同项目应分为 2 组 (实际: ${result.stats.groups} 组)`);
+}
+
+// ── 测试 8: 候选索引性能 ──
+console.log('\n测试 8: 候选索引性能\n');
+{
   const manyFiles = [];
   for (let i = 0; i < 50; i++) {
     manyFiles.push({
-      name: `项目A_模块${i}_设计.md`,
-      content: `项目A模块${i}的设计文档.`,
+      name: `Alpha_模块${i}_设计.md`,
       contentTheme: '项目',
       contentSummary: {
-        title: `项目A模块${i}设计`,
-        summary: `项目A模块${i}的设计文档.`,
-        keywords: ['项目A', '设计', `模块${i}`],
-        entities: ['项目A'],
+        title: `Alpha模块${i}设计`,
+        summary: `Alpha模块${i}的设计文档.`,
+        keywords: ['Alpha', '设计', `模块${i}`],
+        entities: ['Alpha'],
         confidence: 0.8,
         method: 'local-rules',
       },
@@ -261,7 +428,6 @@ console.log('\n测试 4: 候选过滤性能\n');
   for (let i = 0; i < 50; i++) {
     manyFiles.push({
       name: `会议纪要_${i}.md`,
-      content: `第${i}次会议纪要.`,
       contentTheme: '会议',
       contentSummary: {
         title: `会议纪要_${i}`,
@@ -278,98 +444,158 @@ console.log('\n测试 4: 候选过滤性能\n');
   const result = relationship.buildRelationshipGraph(manyFiles);
   const elapsed = Date.now() - start;
 
-  // 候选过滤应显著减少比较对数
-  // 100 个文件全量比较 = 4950 对
-  // 项目A文件内部: 50*49/2 = 1225, 会议文件内部: 50*49/2 = 1225
-  // 跨主题: 0 (不同主题、不同关键词、不同实体、名称不相似)
-  // 期望: ~2450 对
   check(
-    result.stats.pairsChecked < 4950,
-    `候选过滤减少比较对数 (实际: ${result.stats.pairsChecked} / 4950)`
+    result.stats.candidatePairs < 4950,
+    `候选索引减少比较对数 (实际: ${result.stats.candidatePairs} / 4950)`
   );
-
-  // 执行时间应在合理范围内
   check(elapsed < 5000, `性能: 100 文件关系分析 < 5s (实际: ${elapsed}ms)`);
-
-  // 应产生 2 个组（项目A组 + 会议组）
   check(result.stats.groups === 2, `应产生 2 个组 (实际: ${result.stats.groups} 组)`);
 }
 
-// ── 测试 5: 相似度计算 ──
-console.log('\n测试 5: 相似度计算\n');
+// ── 测试 9: 主题相同不能单独计分 ──
+console.log('\n测试 9: 主题相同不能单独计分\n');
 {
   const fp1 = fingerprint.buildFingerprint({
-    name: '项目A_需求.md',
+    name: 'Alpha_需求.md',
     contentTheme: '项目',
     contentSummary: {
-      title: '项目A需求',
-      keywords: ['项目A', '需求', '登录'],
-      entities: ['项目A'],
+      title: 'Alpha需求',
+      keywords: ['Alpha', '需求', '登录'],
+      entities: ['Alpha'],
     },
   });
   const fp2 = fingerprint.buildFingerprint({
-    name: '项目A_设计.md',
+    name: 'Beta_架构.md',
     contentTheme: '项目',
     contentSummary: {
-      title: '项目A设计',
-      keywords: ['项目A', '设计', 'UI'],
-      entities: ['项目A'],
-    },
-  });
-  const fp3 = fingerprint.buildFingerprint({
-    name: '会议纪要.md',
-    contentTheme: '会议',
-    contentSummary: {
-      title: '会议纪要',
-      keywords: ['会议', '纪要'],
-      entities: [],
+      title: 'Beta架构',
+      keywords: ['Beta', '架构', '微服务'],
+      entities: ['Beta', '微服务'],
     },
   });
 
-  // 同项目文件应高度相似
-  const sim12 = similarity.similarity(fp1, fp2);
-  check(sim12.score >= 0.5, `同项目相似度 >= 0.5 (实际: ${sim12.score})`);
-  check(sim12.evidence.length > 0, `同项目有证据 (实际: ${sim12.evidence.length} 条)`);
-
-  // 不同主题文件应低相似度
-  const sim13 = similarity.similarity(fp1, fp3);
-  check(sim13.score < 0.3, `不同主题相似度 < 0.3 (实际: ${sim13.score})`);
-
-  // 候选过滤
-  check(similarity.isCandidatePair(fp1, fp2) === true, `同项目应为候选对`);
-  check(similarity.isCandidatePair(fp1, fp3) === false, `不同主题不应为候选对`);
+  const sim = similarity.similarity(fp1, fp2);
+  check(sim.score < 0.3, `同主题无证据时相似度 < 0.3 (实际: ${sim.score})`);
+  check(!sim.signals.theme, `同主题无额外证据时不给主题信号`);
 }
 
-// ── 测试 6: Fingerprint 生成 ──
-console.log('\n测试 6: Fingerprint 生成\n');
+// ── 测试 10: 有实体证据时主题才计分 ──
+console.log('\n测试 10: 有实体证据时主题才计分\n');
 {
-  const fp = fingerprint.buildFingerprint({
-    name: '项目A_需求文档.md',
+  const fp1 = fingerprint.buildFingerprint({
+    name: 'Alpha_需求.md',
     contentTheme: '项目',
     contentSummary: {
-      title: '项目A需求文档',
-      summary: '项目A的需求分析文档。',
-      keywords: ['项目A', '需求'],
-      entities: ['项目A'],
+      title: 'Alpha需求',
+      keywords: ['Alpha', '需求', '登录'],
+      entities: ['Alpha'],
+    },
+  });
+  const fp2 = fingerprint.buildFingerprint({
+    name: 'Alpha_设计.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'Alpha设计',
+      keywords: ['Alpha', '设计', 'UI'],
+      entities: ['Alpha'],
+    },
+  });
+
+  const sim = similarity.similarity(fp1, fp2);
+  check(sim.score >= 0.4, `有实体证据时相似度 >= 0.4 (实际: ${sim.score})`);
+  check(sim.signals.theme === true, `有实体证据时给主题信号`);
+  check(sim.signals.entity > 0, `有实体信号`);
+}
+
+// ── 测试 11: Group Evidence — 真共享实体 ──
+console.log('\n测试 11: Group Evidence — 真共享实体\n');
+{
+  const result = relationship.buildRelationshipGraph(DATASET.groupAlpha);
+  const group = result.groups[0];
+
+  check(group.coreEntities.includes('Alpha'), `核心实体包含 Alpha`);
+
+  const fpMap = new Map();
+  for (const fp of result.fingerprints) {
+    fpMap.set(fp.id, fp.fingerprint);
+  }
+  for (const f of group.files) {
+    const fp = fpMap.get(f);
+    check((fp.entities || []).includes('Alpha'), `文件 ${f} 包含实体 Alpha`);
+  }
+}
+
+// ── 测试 12: Group Cohesion 约束 ──
+console.log('\n测试 12: Group Cohesion 约束\n');
+{
+  const files = [
+    {
+      name: 'Alpha_需求.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha需求',
+        keywords: ['Alpha', '需求'],
+        entities: ['Alpha'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: 'Alpha_设计.md',
+      contentTheme: '项目',
+      contentSummary: {
+        title: 'Alpha设计',
+        keywords: ['Alpha', '设计'],
+        entities: ['Alpha'],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+    {
+      name: '会议纪要.md',
+      contentTheme: '会议',
+      contentSummary: {
+        title: '会议纪要',
+        keywords: ['会议', '纪要'],
+        entities: [],
+        confidence: 0.9,
+        method: 'local-rules',
+      },
+    },
+  ];
+
+  const result = relationship.buildRelationshipGraph(files);
+  check(result.stats.groups >= 2, `弱连接不应合并 (实际: ${result.stats.groups} 组)`);
+}
+
+// ── 测试 13: Fingerprint 生成 ──
+console.log('\n测试 13: Fingerprint 生成\n');
+{
+  const fp = fingerprint.buildFingerprint({
+    name: 'Alpha_需求文档.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'Alpha需求文档',
+      summary: 'Alpha的需求分析文档。',
+      keywords: ['Alpha', '需求'],
+      entities: ['Alpha'],
       confidence: 0.9,
       method: 'local-rules',
     },
   });
 
-  check(fp.title === '项目A需求文档', `标题正确: "${fp.title}"`);
+  check(fp.title === 'Alpha需求文档', `标题正确: "${fp.title}"`);
   check(fp.theme === '项目', `主题正确: "${fp.theme}"`);
-  check(fp.keywords.includes('项目A'), `关键词包含项目A`);
-  check(fp.entities.includes('项目A'), `实体包含项目A`);
-  check(typeof fp.source === 'string', `来源字段存在: "${fp.source}"`);
+  check(fp.keywords.includes('Alpha'), `关键词包含 Alpha`);
+  check(fp.entities.includes('Alpha'), `实体包含 Alpha`);
 }
 
-// ── 测试 7: 关系报告可序列化 ──
-console.log('\n测试 7: 关系报告可序列化\n');
+// ── 测试 14: 关系报告可序列化 ──
+console.log('\n测试 14: 关系报告可序列化\n');
 {
-  const result = relationship.buildRelationshipGraph(SAME_PROJECT_FILES);
+  const result = relationship.buildRelationshipGraph(DATASET.groupAlpha);
   const report = relationship.generateReport(result);
 
-  // 应该可以 JSON 序列化
   let serialized;
   try {
     serialized = JSON.stringify(report);
@@ -378,7 +604,6 @@ console.log('\n测试 7: 关系报告可序列化\n');
     check(false, `报告可 JSON 序列化: ${e.message}`);
   }
 
-  // 反序列化后结构完整
   const parsed = JSON.parse(serialized);
   check(Array.isArray(parsed.groups), 'groups 是数组');
   check(Array.isArray(parsed.edges), 'edges 是数组');
@@ -386,23 +611,272 @@ console.log('\n测试 7: 关系报告可序列化\n');
   check(parsed.stats.totalFiles === 3, `totalFiles = 3 (实际: ${parsed.stats.totalFiles})`);
 }
 
-// ── 测试 8: 空输入 ──
-console.log('\n测试 8: 空输入处理\n');
+// ── 测试 15: 空输入 / 单文件 ──
+console.log('\n测试 15: 空输入 / 单文件处理\n');
 {
-  const result = relationship.buildRelationshipGraph([]);
-  check(result.stats.totalFiles === 0, `空文件列表: totalFiles = 0`);
-  check(result.stats.groups === 0, `空文件列表: groups = 0`);
-  check(result.stats.totalEdges === 0, `空文件列表: edges = 0`);
+  const emptyResult = relationship.buildRelationshipGraph([]);
+  check(emptyResult.stats.totalFiles === 0, `空文件列表: totalFiles = 0`);
+  check(emptyResult.stats.groups === 0, `空文件列表: groups = 0`);
+
+  const singleResult = relationship.buildRelationshipGraph([DATASET.groupAlpha[0]]);
+  check(singleResult.stats.totalFiles === 1, `单文件: totalFiles = 1`);
+  check(singleResult.stats.groups === 1, `单文件: groups = 1`);
+  check(singleResult.stats.totalEdges === 0, `单文件: edges = 0`);
 }
 
-// ── 测试 9: 单文件 ──
-console.log('\n测试 9: 单文件处理\n');
-{
-  const result = relationship.buildRelationshipGraph([SAME_PROJECT_FILES[0]]);
-  check(result.stats.totalFiles === 1, `单文件: totalFiles = 1`);
-  check(result.stats.groups === 1, `单文件: groups = 1`);
-  check(result.stats.totalEdges === 0, `单文件: edges = 0`);
+// ── Precision / Recall / F1 计算 ────────────────────────────
+console.log('\n=== Precision / Recall / False Positive Rate ===\n');
+
+// 构建独立的 Precision/Recall 数据集
+// 每个文件使用唯一实体名，避免跨数据集假关联
+const prFiles = [
+  // 正例：项目 Alpha（3 个文件）
+  {
+    name: 'PR_Alpha_需求.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Alpha需求',
+      keywords: ['PR_Alpha', '需求', '登录'],
+      entities: ['PR_Alpha'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Alpha_设计.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Alpha设计',
+      keywords: ['PR_Alpha', '设计', 'UI'],
+      entities: ['PR_Alpha'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Alpha_测试.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Alpha测试',
+      keywords: ['PR_Alpha', '测试', '登录'],
+      entities: ['PR_Alpha'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  // 正例：项目 Beta（3 个文件）
+  {
+    name: 'PR_Beta_架构.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Beta架构',
+      keywords: ['PR_Beta', '架构', '微服务'],
+      entities: ['PR_Beta'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Beta_接口.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Beta接口',
+      keywords: ['PR_Beta', 'API', '接口'],
+      entities: ['PR_Beta'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Beta_部署.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Beta部署',
+      keywords: ['PR_Beta', '部署', 'Docker'],
+      entities: ['PR_Beta'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  // Hard Negative: 同主题不同项目（Gamma 和 Delta）
+  {
+    name: 'PR_Gamma_需求.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Gamma需求',
+      keywords: ['PR_Gamma', '需求'],
+      entities: ['PR_Gamma'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Delta_架构.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Delta架构',
+      keywords: ['PR_Delta', '架构'],
+      entities: ['PR_Delta'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  // Hard Negative: Bridge File（同时提到 Gamma 和 Delta，但不合并）
+  {
+    name: 'PR_Gamma_需求.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Gamma需求',
+      keywords: ['PR_Gamma', '需求'],
+      entities: ['PR_Gamma'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_跨项目会议.md',
+    contentTheme: '会议',
+    contentSummary: {
+      title: 'PR_跨项目会议',
+      keywords: ['PR_Gamma', 'PR_Delta', '会议'],
+      entities: ['PR_Gamma', 'PR_Delta'],
+      confidence: 0.85,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_Delta_架构.md',
+    contentTheme: '项目',
+    contentSummary: {
+      title: 'PR_Delta架构',
+      keywords: ['PR_Delta', '架构'],
+      entities: ['PR_Delta'],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  // Hard Negative: 公共模板（无实体）
+  {
+    name: 'PR_会议模板.md',
+    contentTheme: '模板',
+    contentSummary: {
+      title: 'PR_会议模板',
+      keywords: ['会议', '模板'],
+      entities: [],
+      confidence: 0.7,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_需求模板.md',
+    contentTheme: '模板',
+    contentSummary: {
+      title: 'PR_需求模板',
+      keywords: ['需求', '模板'],
+      entities: [],
+      confidence: 0.7,
+      method: 'local-rules',
+    },
+  },
+  // Hard Negative: 不同主题
+  {
+    name: 'PR_食谱.md',
+    contentTheme: '食谱',
+    contentSummary: {
+      title: 'PR_食谱',
+      keywords: ['番茄', '鸡蛋'],
+      entities: [],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+  {
+    name: 'PR_旅行.md',
+    contentTheme: '旅行',
+    contentSummary: {
+      title: 'PR_旅行',
+      keywords: ['日本', '东京'],
+      entities: [],
+      confidence: 0.9,
+      method: 'local-rules',
+    },
+  },
+];
+
+// 注意：PR_Gamma_需求.md 和 PR_Delta_架构.md 在 multiProjectSameTheme 和 bridgeFile 中重复
+// 需要去重（同一文件名 = 同一文件）
+const uniquePRFiles = [];
+const seenNames = new Set();
+for (const f of prFiles) {
+  if (!seenNames.has(f.name)) {
+    seenNames.add(f.name);
+    uniquePRFiles.push(f);
+  }
 }
+
+// Ground Truth: 文件名 → group label
+const prTruth = {};
+for (const f of prFiles) {
+  if (f.name.startsWith('PR_Alpha')) prTruth[f.name] = 'Alpha';
+  if (f.name.startsWith('PR_Beta')) prTruth[f.name] = 'Beta';
+}
+
+const prResult = relationship.buildRelationshipGraph(uniquePRFiles);
+
+// 构建预测分组映射
+const prPredicted = {};
+for (let g = 0; g < prResult.groups.length; g++) {
+  for (const f of prResult.groups[g].files) {
+    prPredicted[f] = g;
+  }
+}
+
+// 计算 TP / FP / FN / TN
+let prTP = 0, prFP = 0, prFN = 0, prTN = 0;
+
+const prFileNames = uniquePRFiles.map(f => f.name);
+for (let i = 0; i < prFileNames.length; i++) {
+  for (let j = i + 1; j < prFileNames.length; j++) {
+    const nameA = prFileNames[i];
+    const nameB = prFileNames[j];
+    const truthA = prTruth[nameA] || null;
+    const truthB = prTruth[nameB] || null;
+    const predA = prPredicted[nameA];
+    const predB = prPredicted[nameB];
+
+    const shouldGroup = truthA && truthB && truthA === truthB;
+    const didGroup = predA !== undefined && predB !== undefined && predA === predB;
+
+    if (shouldGroup && didGroup) {
+      prTP++;
+    } else if (!shouldGroup && didGroup) {
+      prFP++;
+    } else if (shouldGroup && !didGroup) {
+      prFN++;
+    } else {
+      prTN++;
+    }
+  }
+}
+
+const precision = prTP + prFP > 0 ? prTP / (prTP + prFP) : 0;
+const recall = prTP + prFN > 0 ? prTP / (prTP + prFN) : 0;
+const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
+const falsePositiveRate = prFP + prTN > 0 ? prFP / (prFP + prTN) : 0;
+
+console.log(`  True Positive pairs:  ${prTP}`);
+console.log(`  False Positive pairs: ${prFP}`);
+console.log(`  False Negative pairs: ${prFN}`);
+console.log(`  True Negative pairs:  ${prTN}`);
+console.log(`  Precision: ${precision.toFixed(3)}`);
+console.log(`  Recall:    ${recall.toFixed(3)}`);
+console.log(`  F1:        ${f1.toFixed(3)}`);
+console.log(`  FPR:       ${falsePositiveRate.toFixed(3)}`);
+
+check(precision >= 0.8, `Precision >= 0.8 (实际: ${precision.toFixed(3)})`);
+check(recall >= 0.8, `Recall >= 0.8 (实际: ${recall.toFixed(3)})`);
+check(f1 >= 0.8, `F1 >= 0.8 (实际: ${f1.toFixed(3)})`);
+check(falsePositiveRate <= 0.15, `False Positive Rate <= 0.15 (实际: ${falsePositiveRate.toFixed(3)})`);
 
 // ── 结果汇总 ──
 console.log('\n' + '='.repeat(50));
