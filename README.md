@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.4.2 · File Relationship Intelligence · 个人测试项目。
+> V0.4.2.1 · Relationship Integrity & Product Wiring · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
