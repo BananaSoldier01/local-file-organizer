@@ -13,6 +13,9 @@
 const path = require('path');
 const groupNamer = require('./group-namer');
 const memory = require('./memory');
+const decisionEngine = require('./decision-engine');
+const fileState = require('./file-state');
+const relationshipState = require('./relationship-state');
 
 const DANGEROUS_DIRS = new Set([
   '/', '/System', '/Library', '/Applications', '/bin', '/sbin',
@@ -163,58 +166,24 @@ function generatePlan(classifiedFiles, options = {}) {
   }
 
   // ── 生成 Moves ──
-  // V0.4.5: 预计算 Memory 建议（对所有文件查询一次，避免重复调用）
-  const memorySuggestions = new Map(); // fileId → memory suggestion
-  for (const file of classifiedFiles) {
-    const memSug = memory.lookupMemorySuggestion(file);
-    if (memSug) {
-      memorySuggestions.set(file.path || file.name, memSug);
-    }
-  }
+  // V0.5.2: 使用 Decision Engine 统一决策
+  const decisionContext = {
+    relationshipGroups,
+    groupSuggestions,
+    options: { customTargets, targetRoot, flatten },
+  };
 
   for (const file of classifiedFiles) {
     const fileId = file.path || file.name;
     const groupIndex = fileToGroup.get(fileId);
-    const memSug = memorySuggestions.get(fileId);
-    let targetDirName;
-    let memoryReason = null;
-    let memoryEvidence = null;
 
-    // V0.4.5 优先级链：
-    // User Override > Trusted Memory > Learned Memory > Relationship Group > Classification
-    if (file._userOverride) {
-      // 用户手工修改 = 最高优先级
-      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-    } else if (memSug && memSug.participates) {
-      // V0.4.5: 只有 learned / trusted Memory 参与决策
-      // candidate 级别不参与（participates = false）
-      targetDirName = customTargets[memSug.target] || memSug.target;
-      memoryReason = memSug.reason;
-      memoryEvidence = {
-        reason: memSug.reason,
-        memoryId: memSug.entries?.[0]?.id || '',
-        confidence: memSug.level,
-        score: memSug.confidence,
-        matchScore: memSug.matchScore,
-      };
-    } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
-      // 文件属于某个 group → 使用 group 名称作为目录
-      const group = relationshipGroups[groupIndex];
-      const suggestion = groupSuggestions.find(s =>
-        s.files.some(f => {
-          const fId = typeof f === 'string' ? f : (f.path || f.name);
-          return fId === fileId;
-        })
-      );
-      if (suggestion) {
-        targetDirName = suggestion.groupName;
-      } else {
-        targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-      }
-    } else {
-      // 使用分类建议
-      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-    }
+    // V0.5.2: 调用 Decision Engine
+    const decision = decisionEngine.decide(file, decisionContext);
+    const targetDirName = decision.target;
+    const memoryReason = (decision.source === 'trusted_memory' || decision.source === 'learned_memory')
+      ? decision.reason : null;
+    const memoryEvidence = (decision.source === 'trusted_memory' || decision.source === 'learned_memory')
+      ? decision.evidence : null;
 
     let targetDir;
     if (flatten) {
@@ -256,6 +225,12 @@ function generatePlan(classifiedFiles, options = {}) {
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
         memoryReason,
         memoryEvidence,
+        // V0.5.2: Decision Engine 信息
+        decisionSource: decision.source,
+        decisionPriority: decision.priority,
+        decisionConfidence: decision.confidence,
+        decisionEvidence: decision.evidence,
+        decisionChain: decision.evidenceChain,
       });
     } else {
       seenTargets.set(targetPath, { original: file.path });
@@ -268,6 +243,12 @@ function generatePlan(classifiedFiles, options = {}) {
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
         memoryReason,
         memoryEvidence,
+        // V0.5.2: Decision Engine 信息
+        decisionSource: decision.source,
+        decisionPriority: decision.priority,
+        decisionConfidence: decision.confidence,
+        decisionEvidence: decision.evidence,
+        decisionChain: decision.evidenceChain,
       });
     }
   }
@@ -284,6 +265,16 @@ function generatePlan(classifiedFiles, options = {}) {
   // V0.4.4: 统计 Memory 命中
   const memoryHits = moves.filter(m => m.memoryReason).length;
 
+  // V0.5.2: 决策统计
+  const decisionSummary = decisionEngine.summarizeDecisions(
+    new Map(moves.map(m => [m.from, {
+      source: m.decisionSource,
+      priority: m.decisionPriority,
+      confidence: m.decisionConfidence,
+      evidence: m.decisionEvidence,
+    }]))
+  );
+
   return {
     moves,
     conflicts: moves.filter(m => m.conflictResolution === 'renamed'),
@@ -295,6 +286,7 @@ function generatePlan(classifiedFiles, options = {}) {
       hits: memoryHits,
       total: moves.length,
     },
+    decisionStats: decisionSummary,
   };
 }
 
@@ -427,50 +419,25 @@ function generateIncrementalPlan(classifiedFiles, options = {}) {
     }
   }
 
+  // V0.5.2: 使用 Decision Engine 统一决策
+  const incDecisionContext = {
+    relationshipGroups,
+    groupSuggestions: options.groupSuggestions || [],
+    options: { customTargets, targetRoot, flatten, fileState, changeResult },
+  };
+
   // 生成 moves
   for (const { file, reason } of filesToProcess) {
     const fileId = file.path || file.name;
     const groupIndex = fileToGroup.get(fileId);
-    const memSug = memorySuggestions.get(fileId);
-    const existingTarget = existingTargets.get(fileId);
-    let targetDirName;
-    let memoryReason = null;
-    let memoryEvidence = null;
 
-    // V0.5.0 优先级链：
-    // User Override > Trusted Memory > Learned Memory
-    // > Existing Organization State > Relationship > Classification
-    if (file._userOverride) {
-      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-    } else if (memSug && memSug.participates) {
-      targetDirName = customTargets[memSug.target] || memSug.target;
-      memoryReason = memSug.reason;
-      memoryEvidence = {
-        reason: memSug.reason,
-        memoryId: memSug.entries?.[0]?.id || '',
-        confidence: memSug.level,
-        score: memSug.confidence,
-        matchScore: memSug.matchScore,
-      };
-    } else if (existingTarget) {
-      // V0.5.0: Existing Organization State — 保持历史组织方式
-      targetDirName = existingTarget;
-    } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
-      const group = relationshipGroups[groupIndex];
-      const suggestion = (options.groupSuggestions || []).find(s =>
-        s.files.some(f => {
-          const fId = typeof f === 'string' ? f : (f.path || f.name);
-          return fId === fileId;
-        })
-      );
-      if (suggestion) {
-        targetDirName = suggestion.groupName;
-      } else {
-        targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-      }
-    } else {
-      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-    }
+    // V0.5.2: 调用 Decision Engine
+    const decision = decisionEngine.decide(file, incDecisionContext);
+    const targetDirName = decision.target;
+    const memoryReason = (decision.source === 'trusted_memory' || decision.source === 'learned_memory')
+      ? decision.reason : null;
+    const memoryEvidence = (decision.source === 'trusted_memory' || decision.source === 'learned_memory')
+      ? decision.evidence : null;
 
     let targetDir;
     if (flatten) {
@@ -511,6 +478,11 @@ function generateIncrementalPlan(classifiedFiles, options = {}) {
         memoryEvidence,
         incremental: true,
         changeReason: reason,
+        decisionSource: decision.source,
+        decisionPriority: decision.priority,
+        decisionConfidence: decision.confidence,
+        decisionEvidence: decision.evidence,
+        decisionChain: decision.evidenceChain,
       });
     } else {
       seenTargets.set(targetPath, { original: file.path });
@@ -525,6 +497,11 @@ function generateIncrementalPlan(classifiedFiles, options = {}) {
         memoryEvidence,
         incremental: true,
         changeReason: reason,
+        decisionSource: decision.source,
+        decisionPriority: decision.priority,
+        decisionConfidence: decision.confidence,
+        decisionEvidence: decision.evidence,
+        decisionChain: decision.evidenceChain,
       });
     }
   }
@@ -540,6 +517,16 @@ function generateIncrementalPlan(classifiedFiles, options = {}) {
 
   const memoryHits = moves.filter(m => m.memoryReason).length;
 
+  // V0.5.2: 决策统计
+  const incDecisionSummary = decisionEngine.summarizeDecisions(
+    new Map(moves.map(m => [m.from, {
+      source: m.decisionSource,
+      priority: m.decisionPriority,
+      confidence: m.decisionConfidence,
+      evidence: m.decisionEvidence,
+    }]))
+  );
+
   return {
     moves,
     conflicts,
@@ -554,6 +541,7 @@ function generateIncrementalPlan(classifiedFiles, options = {}) {
       memoryHits,
     },
     memoryStats: { hits: memoryHits, total: filesToProcess.length },
+    decisionStats: incDecisionSummary,
   };
 }
 
