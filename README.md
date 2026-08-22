@@ -1,6 +1,6 @@
 # 本地文件智能整理器
 
-> V0.4.2.1 · Relationship Integrity & Product Wiring · 个人测试项目。
+> V0.4.3 · Relationship-aware Organization · 个人测试项目。
 
 一个本地运行的文件整理工具。扫描指定文件夹，多维理解文件内容，生成可编辑的整理方案，经确认后执行移动操作。所有操作可撤销。
 
@@ -234,6 +234,15 @@ node server.js
 ---
 
 ## 更新日志
+
+### V0.4.3 — Relationship-aware Organization
+
+- Group Name Generator（`engine/group-namer.js`）
+- Relationship-aware Plan Generation（`engine/organizer.js`）
+- Classify → Relationship 链路（`server.js`）
+- 冲突文件标记为 shared
+- 关系感知整理集成测试（`test/relationship-plan.js`）
+- 273/273 测试通过
 
 ### V0.4.2.1 — Relationship Integrity & Product Wiring
 

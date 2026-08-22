@@ -1,6 +1,6 @@
 # ROADMAP
 
-> 最后更新：V0.4.2.1
+> 最后更新：V0.4.3
 
 ---
 
@@ -150,6 +150,40 @@ V0.4.2 从「单文件分类」升级为「文件关系智能」——理解文�
 - [x] Precision >= 0.8, Recall >= 0.8, FPR <= 0.15
 - [x] 候选索引避免全量 N²
 - [x] 全部回归测试通过（231/231）
+
+---
+
+## 当前阶段：V0.4.3 — Relationship-aware Organization 🔄
+
+V0.4.3 将 Relationship Engine 接入 Plan Generation，让文件关系真正参与整理建议生成。
+
+### V0.4.3 完成项
+
+- **Group Name Generator**（`engine/group-namer.js`）：基于共享实体/关键词/主题/目录上下文生成分组名称，无 LLM
+- **Relationship-aware Plan Generation**（`engine/organizer.js`）：Relationship Group 作为 Plan 生成的重要输入，同组文件优先归入同一目录
+- **Conflict Handling**：属于多个 Group 的文件标记为 shared，不强制归组，降低关系置信度
+- **Classify → Relationship 链路**（`server.js`）：分类完成后自动执行关系分析，relationshipGroups 随 classify result 返回
+- **Plan 输入扩展**：`/api/plan` 接受 relationshipGroups 参数，传入 organizer
+- **Relationship Plan Integration**（`test/relationship-plan.js`）：10 个测试场景，42 项检查
+
+### V0.4.3 验收标准
+
+- [x] Group Suggestion 可解释（名称 + 置信度 + 理由）
+- [x] 同组文件归入同一目录
+- [x] 不同项目不合并
+- [x] 公共模板不导致项目错误合并
+- [x] 冲突文件标记为 shared
+- [x] 不传 relationshipGroups 时兼容旧版行为
+- [x] Group Naming 降级机制（无法命名时 → "项目资料"）
+- [x] 全部回归测试通过（273/273）
+
+### V0.4.3 明确不做
+
+- 不做 LLM 接入
+- 不做 DOCX/PDF 深度解析
+- 不自动执行 Group Plan
+- 不做大规模 UI 重构
+- 不做向量数据库
 
 ---
 

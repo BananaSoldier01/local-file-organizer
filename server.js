@@ -640,6 +640,18 @@ function createClassifyJob(files, config) {
           }
         }
 
+        // V0.4.3: Relationship Analysis 阶段
+        job.status = 'relationship';
+        try {
+          const relationship = require('./engine/relationship');
+          const relResult = relationship.buildRelationshipGraph(allResults);
+          job.relationshipGroups = relResult.groups;
+          job.relationshipStats = relResult.stats;
+        } catch (relErr) {
+          console.warn('[classify] relationship analysis failed:', relErr.message);
+          job.relationshipGroups = [];
+        }
+
         job.status = job.failedBatches > 0 ? 'partial' : 'completed';
       }
       job.results = allResults;
@@ -695,6 +707,10 @@ function handleClassifyResult(req, res) {
   const result = { results: job.results };
   if (job.projectGroups) {
     result.projectGroups = job.projectGroups;
+  }
+  if (job.relationshipGroups) {
+    result.relationshipGroups = job.relationshipGroups;
+    result.relationshipStats = job.relationshipStats;
   }
   ok(res, result);
 }
@@ -787,7 +803,10 @@ async function handlePlan(req, res) {
       }
     }
 
-    const plan = organizer.generatePlan(files, options);
+    // V0.4.3: 接收 Relationship Groups 作为 Plan 生成输入
+    const relationshipGroups = (options && options.relationshipGroups) || null;
+
+    const plan = organizer.generatePlan(files, { ...options, relationshipGroups });
     const validation = organizer.validatePlan(plan);
 
     // 存储受信任的 plan
