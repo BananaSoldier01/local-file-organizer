@@ -55,6 +55,13 @@ const API = {
   getFileTypes() { return this.get('/api/file-types'); },
   getSettings() { return this.get('/api/settings'); },
   saveSettings(s) { return this.post('/api/settings', s); },
+  // ── V0.4.4: Memory API ──
+  getMemory() { return this.get('/api/memory'); },
+  recordMemory(entry) { return this.post('/api/memory', entry); },
+  clearMemory() { return this.post('/api/memory/clear', {}); },
+  getMemoryStats() { return this.get('/api/memory/stats'); },
+  lookupMemory(file) { return this.post('/api/memory/lookup', { file }); },
+  submitFeedback(planData, userDecisions) { return this.post('/api/feedback', { planData, userDecisions }); },
 };
 
 // ── 路径工具 ──────────────────────────────────────────────
@@ -707,6 +714,12 @@ function renderWorkspaceRow(file) {
     ? path.basename(path.dirname(move.to))
     : (file.suggestedTarget || '其他');
 
+  // V0.4.4: Memory 解释性 — 显示建议依据
+  const memoryReason = move?.memoryReason || null;
+  const memoryBadge = memoryReason
+    ? `<span class="mem-badge" title="${escapeHtml(memoryReason)}">🧠</span>`
+    : '';
+
   // checkbox 表示"选中"（用于批量操作），不是"排除"
   const isSelected = state.selectedFiles.has(file.path);
   const isExcluded = state.excludedFiles.has(file.path);
@@ -720,7 +733,7 @@ function renderWorkspaceRow(file) {
     '</td>' +
     '<td><span class="ws-type-badge">' + escapeHtml(file.fileTypeLabel || file.fileType) + '</span></td>' +
     '<td><input class="ws-theme-input" type="text" value="' + escapeHtml(file.contentTheme || '') + '" placeholder="主题" spellcheck="false" title="' + escapeHtml(evidenceTooltip) + '"></td>' +
-    '<td><input class="ws-target-input" type="text" value="' + escapeHtml(currentTarget) + '" placeholder="目标目录" spellcheck="false"></td>' +
+    '<td><input class="ws-target-input" type="text" value="' + escapeHtml(currentTarget) + '" placeholder="目标目录" spellcheck="false">' + memoryBadge + '</td>' +
     '<td><div class="ws-risk-dots">' + riskDots + '</div></td>' +
     '<td class="ws-size">' + formatSize(file.size) + '</td>' +
     '<td class="ws-date">' + formatDate(file.modified) + '</td>';

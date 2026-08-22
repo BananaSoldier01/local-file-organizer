@@ -12,6 +12,7 @@
 
 const path = require('path');
 const groupNamer = require('./group-namer');
+const memory = require('./memory');
 
 const DANGEROUS_DIRS = new Set([
   '/', '/System', '/Library', '/Applications', '/bin', '/sbin',
@@ -151,14 +152,30 @@ function generatePlan(classifiedFiles, options = {}) {
   }
 
   // ── 生成 Moves ──
+  // V0.4.4: 预计算 Memory 建议（对所有文件查询一次，避免重复调用）
+  const memorySuggestions = new Map(); // fileId → memory suggestion
+  for (const file of classifiedFiles) {
+    const memSug = memory.lookupMemorySuggestion(file);
+    if (memSug) {
+      memorySuggestions.set(file.path || file.name, memSug);
+    }
+  }
+
   for (const file of classifiedFiles) {
     const fileId = file.path || file.name;
     const groupIndex = fileToGroup.get(fileId);
+    const memSug = memorySuggestions.get(fileId);
     let targetDirName;
+    let memoryReason = null;
 
-    // V0.4.3.2: 用户手工修改目标目录 = override，优先级最高
+    // V0.4.4 优先级链：User Override > Memory > Relationship Group > Classification
     if (file._userOverride) {
+      // 用户手工修改 = 最高优先级
       targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
+    } else if (memSug) {
+      // V0.4.4: Memory 优先于 Relationship Group
+      targetDirName = customTargets[memSug.target] || memSug.target;
+      memoryReason = memSug.reason;
     } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
       // 文件属于某个 group → 使用 group 名称作为目录
       const group = relationshipGroups[groupIndex];
@@ -216,6 +233,7 @@ function generatePlan(classifiedFiles, options = {}) {
         conflictResolution: 'renamed',
         originalTarget: targetPath,
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
+        memoryReason,
       });
     } else {
       seenTargets.set(targetPath, { original: file.path });
@@ -226,6 +244,7 @@ function generatePlan(classifiedFiles, options = {}) {
         fileType: file.fileType,
         conflictResolution: null,
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
+        memoryReason,
       });
     }
   }
@@ -239,6 +258,9 @@ function generatePlan(classifiedFiles, options = {}) {
     summary[move.category].count++;
   }
 
+  // V0.4.4: 统计 Memory 命中
+  const memoryHits = moves.filter(m => m.memoryReason).length;
+
   return {
     moves,
     conflicts: moves.filter(m => m.conflictResolution === 'renamed'),
@@ -246,6 +268,10 @@ function generatePlan(classifiedFiles, options = {}) {
     targetRoot: rootDir || null,
     groupSuggestions,
     conflictFiles: [...conflictFiles],
+    memoryStats: {
+      hits: memoryHits,
+      total: moves.length,
+    },
   };
 }
 

@@ -17,6 +17,8 @@ const classifier = require('./engine/classifier');
 const organizer = require('./engine/organizer');
 const executor = require('./engine/executor');
 const history = require('./engine/history');
+const memory = require('./engine/memory');
+const feedback = require('./engine/feedback');
 
 // ── 配置 ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 38211;
@@ -176,6 +178,25 @@ async function handleAPI(req, res, parsedUrl) {
   }
   if (pathname === '/api/relationship' && req.method === 'POST') {
     return await handleRelationship(req, res);
+  }
+  // ── V0.4.4: Memory API ──
+  if (pathname === '/api/memory' && req.method === 'GET') {
+    return handleGetMemory(req, res);
+  }
+  if (pathname === '/api/memory' && req.method === 'POST') {
+    return await handleRecordMemory(req, res);
+  }
+  if (pathname === '/api/memory/clear' && req.method === 'POST') {
+    return handleClearMemory(req, res);
+  }
+  if (pathname === '/api/memory/stats' && req.method === 'GET') {
+    return ok(res, memory.getMemoryStats());
+  }
+  if (pathname === '/api/memory/lookup' && req.method === 'POST') {
+    return await handleMemoryLookup(req, res);
+  }
+  if (pathname === '/api/feedback' && req.method === 'POST') {
+    return await handleFeedback(req, res);
   }
   fail(res, 404, 'Not found');
 }
@@ -1073,6 +1094,49 @@ async function handleTestSecurity(req, res) {
 
     const allSafe = results.every(r => r.safe);
     ok(res, { allSafe, results });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── V0.4.4: Memory API Handlers ──────────────────────────────
+function handleGetMemory(req, res) {
+  try {
+    const data = memory.exportMemory();
+    ok(res, data);
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleRecordMemory(req, res) {
+  try {
+    const body = await readBody(req);
+    const entry = memory.recordDecision(body);
+    ok(res, entry);
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleClearMemory(req, res) {
+  try {
+    memory.clearMemory();
+    ok(res, { cleared: true });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleMemoryLookup(req, res) {
+  try {
+    const body = await readBody(req);
+    const { file } = body;
+    if (!file) return fail(res, 400, '缺少 file');
+    const suggestion = memory.lookupMemorySuggestion(file);
+    ok(res, { suggestion });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleFeedback(req, res) {
+  try {
+    const body = await readBody(req);
+    const { planData, userDecisions } = body;
+    if (!planData || !userDecisions) return fail(res, 400, '缺少 planData 或 userDecisions');
+    const result = feedback.collectFeedback(planData, userDecisions);
+    ok(res, result);
   } catch (err) { fail(res, 500, err.message); }
 }
 

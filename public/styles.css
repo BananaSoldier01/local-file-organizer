@@ -712,3 +712,11 @@ html, body {
   margin-top: 4px;
   font-style: italic;
 }
+
+/* ── Memory Badge (V0.4.4) ─────────────────── */
+.mem-badge {
+  font-size: 11px;
+  margin-left: 4px;
+  cursor: help;
+  vertical-align: middle;
+}
