@@ -1,11 +1,11 @@
 /**
- * feedback.js — Plan Feedback Collection (V0.4.4)
+ * feedback.js — Plan Feedback Collection (V0.4.5)
  *
- * 在 User Review 阶段收集用户决策，写入 Memory。
+ * 在 User Review 阶段收集用户决策，写入 Memory (Schema v2)。
  *
  * 原则：
  * - 只记录用户明确操作
- * - 不记录被动行为（点击查看、滚动等）
+ * - 不记录被动行为
  * - 写入可追踪（带 timestamp 和 source）
  */
 
@@ -28,10 +28,9 @@ function collectFeedback(planData, userDecisions, options = {}) {
       try {
         memory.recordDecision({
           type: 'target_override',
-          filePattern: override.filePattern || '*',
-          keywords: override.keywords || [],
+          file: override.file || { name: override.filePattern, path: override.filePattern },
           target: override.target,
-          reason: override.reason || `用户将 "${override.filePattern}" 的目标从 "${override.originalTarget}" 改为 "${override.target}"`,
+          reason: override.reason || `用户将目标改为 "${override.target}"`,
         });
         results.recorded++;
       } catch (err) {
@@ -46,9 +45,8 @@ function collectFeedback(planData, userDecisions, options = {}) {
       try {
         memory.recordDecision({
           type: 'exclude',
-          filePattern: excl.filePattern || '*',
-          keywords: excl.keywords || [],
-          reason: excl.reason || `用户排除了 "${excl.filePattern}"`,
+          file: excl.file || { name: excl.filePattern, path: excl.filePattern },
+          reason: excl.reason || `用户排除了文件`,
         });
         results.recorded++;
       } catch (err) {
@@ -64,7 +62,7 @@ function collectFeedback(planData, userDecisions, options = {}) {
         memory.recordDecision({
           type: 'relationship_accept',
           groupName: accept.groupName,
-          keywords: accept.keywords || [],
+          relationshipGroup: accept.groupName,
           reason: accept.reason || `用户接受了 Group "${accept.groupName}"`,
         });
         results.recorded++;
@@ -81,7 +79,7 @@ function collectFeedback(planData, userDecisions, options = {}) {
         memory.recordDecision({
           type: 'relationship_reject',
           groupName: reject.groupName,
-          keywords: reject.keywords || [],
+          relationshipGroup: reject.groupName,
           reason: reject.reason || `用户拒绝了 Group "${reject.groupName}"`,
         });
         results.recorded++;
@@ -96,8 +94,6 @@ function collectFeedback(planData, userDecisions, options = {}) {
 
 /**
  * 从 Plan 执行结果中提取用户决策。
- * 当用户执行了 Plan 且未做任何修改时，不记录（被动行为）。
- * 当用户修改了 Plan 中的某些目标后执行，记录修改。
  *
  * @param {object} originalPlan - 原始 Plan
  * @param {object} executedPlan - 实际执行的 Plan（含用户修改）
@@ -113,20 +109,16 @@ function extractDecisionsFromExecution(originalPlan, executedPlan) {
 
   if (!originalPlan?.moves || !executedPlan?.moves) return decisions;
 
-  // 建立原始 move 映射
   const originalMap = new Map();
   for (const m of originalPlan.moves) {
     originalMap.set(m.from, m);
   }
 
-  // 比较实际执行与原始 Plan
   for (const move of executedPlan.moves) {
     const original = originalMap.get(move.from);
     if (!original) continue;
 
-    // 检查目标是否被修改
     if (original.to !== move.to) {
-      // V0.4.4: 从完整路径中提取目录名（取倒数第二个路径段）
       function extractDirName(filePath) {
         const parts = filePath.split('/').filter(Boolean);
         return parts.length >= 2 ? parts[parts.length - 2] : '';
@@ -137,8 +129,7 @@ function extractDecisionsFromExecution(originalPlan, executedPlan) {
 
       if (originalTargetDir && newTargetDir && originalTargetDir !== newTargetDir) {
         decisions.targetOverrides.push({
-          filePattern: move.from,
-          keywords: memory.extractFileKeywords({ name: move.from, path: move.from }),
+          file: { name: move.from, path: move.from },
           target: newTargetDir,
           originalTarget: originalTargetDir,
           reason: `执行时用户将目标从 "${originalTargetDir}" 改为 "${newTargetDir}"`,

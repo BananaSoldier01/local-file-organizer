@@ -152,7 +152,7 @@ function generatePlan(classifiedFiles, options = {}) {
   }
 
   // ── 生成 Moves ──
-  // V0.4.4: 预计算 Memory 建议（对所有文件查询一次，避免重复调用）
+  // V0.4.5: 预计算 Memory 建议（对所有文件查询一次，避免重复调用）
   const memorySuggestions = new Map(); // fileId → memory suggestion
   for (const file of classifiedFiles) {
     const memSug = memory.lookupMemorySuggestion(file);
@@ -167,15 +167,25 @@ function generatePlan(classifiedFiles, options = {}) {
     const memSug = memorySuggestions.get(fileId);
     let targetDirName;
     let memoryReason = null;
+    let memoryEvidence = null;
 
-    // V0.4.4 优先级链：User Override > Memory > Relationship Group > Classification
+    // V0.4.5 优先级链：
+    // User Override > Trusted Memory > Learned Memory > Relationship Group > Classification
     if (file._userOverride) {
       // 用户手工修改 = 最高优先级
       targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
-    } else if (memSug) {
-      // V0.4.4: Memory 优先于 Relationship Group
+    } else if (memSug && memSug.participates) {
+      // V0.4.5: 只有 learned / trusted Memory 参与决策
+      // candidate 级别不参与（participates = false）
       targetDirName = customTargets[memSug.target] || memSug.target;
       memoryReason = memSug.reason;
+      memoryEvidence = {
+        reason: memSug.reason,
+        memoryId: memSug.entries?.[0]?.id || '',
+        confidence: memSug.level,
+        score: memSug.confidence,
+        matchScore: memSug.matchScore,
+      };
     } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
       // 文件属于某个 group → 使用 group 名称作为目录
       const group = relationshipGroups[groupIndex];
@@ -234,6 +244,7 @@ function generatePlan(classifiedFiles, options = {}) {
         originalTarget: targetPath,
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
         memoryReason,
+        memoryEvidence,
       });
     } else {
       seenTargets.set(targetPath, { original: file.path });
@@ -245,6 +256,7 @@ function generatePlan(classifiedFiles, options = {}) {
         conflictResolution: null,
         relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
         memoryReason,
+        memoryEvidence,
       });
     }
   }

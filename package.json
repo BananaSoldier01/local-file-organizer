@@ -1,6 +1,6 @@
 {
   "name": "file-organizer",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
@@ -16,7 +16,8 @@
     "test:memory": "node test/memory.js",
     "test:memory-plan": "node test/memory-plan.js",
     "test:feedback-loop": "node test/feedback-loop.js",
-    "test": "npm run test:smoke && npm run test:integration && npm run test:scenario && npm run test:e2e && npm run test:session-ttl && npm run test:evaluation && npm run test:relationship && npm run test:relationship-plan && npm run test:memory && npm run test:memory-plan && npm run test:feedback-loop"
+    "test:memory-v2": "node test/memory-v2.js",
+    "test": "npm run test:smoke && npm run test:integration && npm run test:scenario && npm run test:e2e && npm run test:session-ttl && npm run test:evaluation && npm run test:relationship && npm run test:relationship-plan && npm run test:memory && npm run test:memory-plan && npm run test:feedback-loop && npm run test:memory-v2"
   },
   "keywords": [
     "file-organizer",

@@ -1,11 +1,11 @@
 /**
- * memory-plan.js — Memory-aware Plan 集成测试 (V0.4.4)
+ * memory-plan.js — Memory-aware Plan 集成测试 (V0.4.5)
  *
  * 测试 Memory 与 Organizer 的集成：
  * 1. Memory 优先于 Relationship Group
- * 2. Memory 优先于 Classification Suggestion
- * 3. 用户 override 优先于 Memory
- * 4. Memory 命中统计
+ * 2. 用户 override 优先于 Memory
+ * 3. Memory 命中统计
+ * 4. candidate 不参与决策
  */
 
 const memory = require('../engine/memory');
@@ -30,14 +30,22 @@ console.log('\n测试 1: Memory 优先于 Relationship Group\n');
 {
   memory.clearMemory();
 
-  // 先记录用户曾经将"预算"文件放入"财务"
-  memory.recordDecision({
-    type: 'target_override',
-    keywords: ['预算', '财务'],
-    target: '财务',
-  });
+  // 记录 3 次，每次 touch 多次以达到 learned 级别
+  for (let i = 0; i < 3; i++) {
+    const entry = memory.recordDecision({
+      type: 'target_override',
+      file: {
+        name: `预算${i}.csv`,
+        path: `/test/预算${i}.csv`,
+        contentTheme: '项目',
+        contentSummary: { keywords: ['预算', '项目A'], entities: ['项目A'] },
+      },
+      target: '财务',
+    });
+    // touch 多次以达到 learned（usageCount >= 3）
+    for (let t = 0; t < 3; t++) memory.touchMemory(entry.id);
+  }
 
-  // 创建 Relationship Group（项目A）
   const files = [
     {
       name: '项目A_预算.csv',
@@ -66,14 +74,12 @@ console.log('\n测试 1: Memory 优先于 Relationship Group\n');
     relationshipGroups: relResult.groups,
   });
 
-  // Memory 命中"预算"文件 → 应归入"财务"而非"项目A"
   const budgetMove = plan.moves.find(m => m.from.includes('预算'));
   check(budgetMove && budgetMove.to.includes('财务'),
     `Memory 优先：预算文件归入"财务" (实际: ${budgetMove?.to})`);
   check(budgetMove && budgetMove.memoryReason,
     `Memory 命中带有 reason (实际: ${budgetMove?.memoryReason})`);
 
-  // 未命中 Memory 的文件仍归入项目A
   const schemeMove = plan.moves.find(m => m.from.includes('方案'));
   check(schemeMove && schemeMove.to.includes('项目A'),
     `未命中 Memory 的文件归入"项目A" (实际: ${schemeMove?.to})`);
@@ -84,12 +90,19 @@ console.log('\n测试 2: 用户 Override 优先于 Memory\n');
 {
   memory.clearMemory();
 
-  // 记录 Memory：预算 → 财务
-  memory.recordDecision({
-    type: 'target_override',
-    keywords: ['预算'],
-    target: '财务',
-  });
+  for (let i = 0; i < 3; i++) {
+    const entry = memory.recordDecision({
+      type: 'target_override',
+      file: {
+        name: `预算${i}.csv`,
+        path: `/test/预算${i}.csv`,
+        contentTheme: '项目',
+        contentSummary: { keywords: ['预算', '项目A'], entities: ['项目A'] },
+      },
+      target: '财务',
+    });
+    for (let t = 0; t < 3; t++) memory.touchMemory(entry.id);
+  }
 
   const files = [
     {
@@ -120,11 +133,19 @@ console.log('\n测试 3: Memory 命中统计\n');
 {
   memory.clearMemory();
 
-  memory.recordDecision({
-    type: 'target_override',
-    keywords: ['发票', '税务'],
-    target: '个人/税务',
-  });
+  for (let i = 0; i < 3; i++) {
+    const entry = memory.recordDecision({
+      type: 'target_override',
+      file: {
+        name: `发票${i}.xlsx`,
+        path: `/test/发票${i}.xlsx`,
+        contentTheme: '财务',
+        contentSummary: { keywords: ['发票', '税务'], entities: [] },
+      },
+      target: '个人/税务',
+    });
+    for (let t = 0; t < 3; t++) memory.touchMemory(entry.id);
+  }
 
   const files = [
     {
@@ -190,7 +211,6 @@ console.log('\n测试 4: 无 Memory 时等同于旧版行为\n');
     relationshipGroups: relResult.groups,
   });
 
-  // 无 Memory → 应归入项目A（Relationship Group）
   const move = plan.moves.find(m => m.from.includes('文档1'));
   check(move && move.to.includes('项目A'),
     `无 Memory 时使用 Relationship Group (实际: ${move?.to})`);

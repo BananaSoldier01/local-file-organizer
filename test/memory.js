@@ -1,18 +1,10 @@
 /**
- * memory.js — User Decision Memory 测试 (V0.4.4)
+ * memory.js — User Decision Memory 测试 (V0.4.5)
  *
- * 测试 Memory 模块的核心能力：
- * 1. 记录用户决策
- * 2. 查询匹配的 Memory
- * 3. 从文件提取关键词
- * 4. Memory 建议查找
- * 5. 清空/删除
+ * 测试 Memory 模块的核心能力（兼容 Schema v2）。
  */
 
 const memory = require('../engine/memory');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
 
 let passed = 0;
 let failed = 0;
@@ -30,28 +22,29 @@ function check(condition, message) {
 // ── 测试 1: 记录和查询 ──
 console.log('\n测试 1: 记录和查询 Memory\n');
 {
-  // 清空
   memory.clearMemory();
 
-  // 记录一条 target_override
   const entry = memory.recordDecision({
     type: 'target_override',
-    filePattern: '*.xlsx',
-    keywords: ['预算', '财务'],
+    file: {
+      name: '预算.xlsx',
+      path: '/test/预算.xlsx',
+      contentTheme: '财务',
+      contentSummary: { keywords: ['预算', '财务'], entities: [] },
+    },
     target: '财务',
     reason: '用户将预算文件放入财务目录',
   });
 
   check(entry.type === 'target_override', `记录类型正确 (实际: ${entry.type})`);
-  check(entry.target === '财务', `记录目标正确 (实际: ${entry.target})`);
+  check(entry.action.target === '财务', `记录目标正确 (实际: ${entry.action.target})`);
   check(entry.source === 'user', `来源标记为 user (实际: ${entry.source})`);
   check(entry.id && entry.id.startsWith('mem_'), `ID 格式正确 (实际: ${entry.id})`);
   check(entry.timestamp, `有时间戳`);
 
-  // 查询
   const results = memory.queryMemory({ keywords: ['预算'] });
   check(results.length === 1, `查询匹配 1 条 (实际: ${results.length})`);
-  check(results[0].target === '财务', `查询结果目标正确 (实际: ${results[0].target})`);
+  check(results[0].action.target === '财务', `查询结果目标正确 (实际: ${results[0].action.target})`);
 }
 
 // ── 测试 2: 关键词匹配 ──
@@ -61,25 +54,27 @@ console.log('\n测试 2: 关键词匹配\n');
 
   memory.recordDecision({
     type: 'target_override',
-    keywords: ['发票', '税务', '报税'],
+    file: {
+      name: '发票.xlsx',
+      path: '/test/发票.xlsx',
+      contentTheme: '财务',
+      contentSummary: { keywords: ['发票', '税务', '报税'], entities: [] },
+    },
     target: '个人/税务',
   });
 
-  // 精确匹配
   const r1 = memory.queryMemory({ keywords: ['发票'] });
   check(r1.length === 1, `关键词"发票"匹配 (实际: ${r1.length})`);
 
-  // 部分匹配
   const r2 = memory.queryMemory({ keywords: ['税务'] });
   check(r2.length === 1, `关键词"税务"匹配 (实际: ${r2.length})`);
 
-  // 无匹配
   const r3 = memory.queryMemory({ keywords: ['无关词'] });
   check(r3.length === 0, `无匹配关键词返回空 (实际: ${r3.length})`);
 }
 
-// ── 测试 3: 从文件提取关键词 ──
-console.log('\n测试 3: 从文件提取关键词\n');
+// ── 测试 3: 从文件提取上下文 ──
+console.log('\n测试 3: 从文件提取上下文\n');
 {
   const file = {
     name: '2026项目预算.xlsx',
@@ -91,10 +86,11 @@ console.log('\n测试 3: 从文件提取关键词\n');
     },
   };
 
-  const keywords = memory.extractFileKeywords(file);
-  check(keywords.includes('2026项目预算'.toLowerCase()) || keywords.includes('2026'), `包含文件名片段 (实际: ${keywords})`);
-  check(keywords.includes('预算'), `包含关键词"预算" (实际: ${keywords})`);
-  check(keywords.includes('财务'), `包含主题"财务" (实际: ${keywords})`);
+  const ctx = memory.extractContext(file);
+  check(ctx.contentKeywords.includes('预算'), `包含关键词"预算" (实际: ${ctx.contentKeywords})`);
+  check(ctx.contentKeywords.includes('财务'), `包含主题"财务" (实际: ${ctx.contentKeywords})`);
+  check(ctx.entities.includes('项目a'), `包含实体"项目A" (实际: ${ctx.entities})`);
+  check(ctx.extension === 'xlsx', `扩展名正确 (实际: ${ctx.extension})`);
 }
 
 // ── 测试 4: Memory 建议查找 ──
@@ -102,23 +98,30 @@ console.log('\n测试 4: Memory 建议查找\n');
 {
   memory.clearMemory();
 
-  // 记录 3 次用户将预算文件放入"财务"
-  memory.recordDecision({ type: 'target_override', keywords: ['预算', 'xlsx'], target: '财务' });
-  memory.recordDecision({ type: 'target_override', keywords: ['预算', 'csv'], target: '财务' });
-  memory.recordDecision({ type: 'target_override', keywords: ['预算', 'pdf'], target: '财务' });
+  for (let i = 0; i < 3; i++) {
+    memory.recordDecision({
+      type: 'target_override',
+      file: {
+        name: `预算${i}.xlsx`,
+        path: `/test/预算${i}.xlsx`,
+        contentTheme: '财务',
+        contentSummary: { keywords: ['预算', '财务'], entities: [] },
+      },
+      target: '财务',
+    });
+  }
 
-  // 新文件
   const newFile = {
     name: '2027项目预算.xlsx',
     path: '/test/2027项目预算.xlsx',
+    contentTheme: '财务',
     contentSummary: { keywords: ['预算', '2027'] },
   };
 
   const suggestion = memory.lookupMemorySuggestion(newFile);
   check(suggestion !== null, `Memory 建议存在`);
   check(suggestion && suggestion.target === '财务', `建议目标为"财务" (实际: ${suggestion?.target})`);
-  check(suggestion && suggestion.confidence >= 0.5, `置信度 >= 0.5 (实际: ${suggestion?.confidence})`);
-  check(suggestion && suggestion.count === 3, `匹配次数为 3 (实际: ${suggestion?.count})`);
+  check(suggestion && suggestion.confidence >= 0.3, `置信度 >= 0.3 (实际: ${suggestion?.confidence})`);
 }
 
 // ── 测试 5: 无 Memory 时返回 null ──
@@ -129,6 +132,7 @@ console.log('\n测试 5: 无 Memory 时返回 null\n');
   const file = {
     name: 'unknown.txt',
     path: '/test/unknown.txt',
+    contentTheme: '默认',
     contentSummary: { keywords: ['未知'] },
   };
 
@@ -141,8 +145,16 @@ console.log('\n测试 6: 删除和清空\n');
 {
   memory.clearMemory();
 
-  const e1 = memory.recordDecision({ type: 'target_override', keywords: ['test1'], target: 'A' });
-  const e2 = memory.recordDecision({ type: 'target_override', keywords: ['test2'], target: 'B' });
+  const e1 = memory.recordDecision({
+    type: 'target_override',
+    file: { name: 'a.xlsx', path: '/test/a.xlsx', contentTheme: '财务', contentSummary: { keywords: ['a'] } },
+    target: 'A',
+  });
+  const e2 = memory.recordDecision({
+    type: 'target_override',
+    file: { name: 'b.xlsx', path: '/test/b.xlsx', contentTheme: '财务', contentSummary: { keywords: ['b'] } },
+    target: 'B',
+  });
 
   check(memory.getMemoryStats().total === 2, `有 2 条记录 (实际: ${memory.getMemoryStats().total})`);
 
@@ -158,9 +170,20 @@ console.log('\n测试 7: 统计信息\n');
 {
   memory.clearMemory();
 
-  memory.recordDecision({ type: 'target_override', keywords: ['a'], target: 'A' });
-  memory.recordDecision({ type: 'exclude', keywords: ['b'] });
-  memory.recordDecision({ type: 'relationship_accept', groupName: 'G1' });
+  memory.recordDecision({
+    type: 'target_override',
+    file: { name: 'a.xlsx', path: '/test/a.xlsx', contentTheme: '财务', contentSummary: { keywords: ['a'] } },
+    target: 'A',
+  });
+  memory.recordDecision({
+    type: 'exclude',
+    file: { name: 'b.txt', path: '/test/b.txt', contentTheme: '默认', contentSummary: { keywords: ['b'] } },
+  });
+  memory.recordDecision({
+    type: 'relationship_accept',
+    groupName: 'G1',
+    relationshipGroup: 'G1',
+  });
 
   const stats = memory.getMemoryStats();
   check(stats.total === 3, `总数为 3 (实际: ${stats.total})`);

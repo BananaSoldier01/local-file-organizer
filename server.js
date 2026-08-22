@@ -195,6 +195,9 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/memory/lookup' && req.method === 'POST') {
     return await handleMemoryLookup(req, res);
   }
+  if (pathname.startsWith('/api/memory/') && req.method === 'DELETE') {
+    return await handleDeleteMemory(req, res, pathname);
+  }
   if (pathname === '/api/feedback' && req.method === 'POST') {
     return await handleFeedback(req, res);
   }
@@ -1137,6 +1140,19 @@ async function handleFeedback(req, res) {
     if (!planData || !userDecisions) return fail(res, 400, '缺少 planData 或 userDecisions');
     const result = feedback.collectFeedback(planData, userDecisions);
     ok(res, result);
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── V0.4.5: Memory DELETE Handler ──────────────────────────
+async function handleDeleteMemory(req, res, pathname) {
+  try {
+    const parts = pathname.split('/');
+    const id = parts[parts.length - 1];
+    if (!id || id === 'undefined') {
+      return fail(res, 400, '缺少 memory ID');
+    }
+    memory.deleteEntry(id);
+    ok(res, { deleted: id });
   } catch (err) { fail(res, 500, err.message); }
 }
 
