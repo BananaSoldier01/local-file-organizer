@@ -383,8 +383,8 @@ console.log('\n测试 5: Hard Negative — Bridge File 不应合并项目\n');
   check(largeGroups.length === 0, `不应形成 3+ 文件大组 (实际: ${largeGroups.length} 个)`);
 
   for (const group of result.groups) {
-    const hasGamma = group.files.some(f => f.includes('Gamma'));
-    const hasDelta = group.files.some(f => f.includes('Delta'));
+    const hasGamma = group.files.some(f => (f.path || f).includes('Gamma'));
+    const hasDelta = group.files.some(f => (f.path || f).includes('Delta'));
     check(!(hasGamma && hasDelta), `组不应同时包含Gamma和Delta: ${JSON.stringify(group.files)}`);
   }
 }
@@ -520,8 +520,9 @@ console.log('\n测试 11: Group Evidence — 真共享实体\n');
     fpMap.set(fp.id, fp.fingerprint);
   }
   for (const f of group.files) {
-    const fp = fpMap.get(f);
-    check((fp.entities || []).includes('Alpha'), `文件 ${f} 包含实体 Alpha`);
+    const fileId = typeof f === 'string' ? f : (f.path || f.name);
+    const fp = fpMap.get(fileId);
+    check(fp && (fp.entities || []).includes('Alpha'), `文件 ${fileId} 包含实体 Alpha`);
   }
 }
 
@@ -827,7 +828,9 @@ const prResult = relationship.buildRelationshipGraph(uniquePRFiles);
 const prPredicted = {};
 for (let g = 0; g < prResult.groups.length; g++) {
   for (const f of prResult.groups[g].files) {
-    prPredicted[f] = g;
+    // V0.4.3.1: group.files 现在是对象数组，提取 name 作为 key
+    const fId = typeof f === 'string' ? f : (f.name || f.path);
+    prPredicted[fId] = g;
   }
 }
 

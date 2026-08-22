@@ -41,10 +41,13 @@ function buildFingerprint(file, contentSummary) {
     summary: summary.summary || '',
     keywords: uniqueArray([
       ...(summary.keywords || []),
-      ...(file.contentTheme ? [file.contentTheme] : []),
+      // V0.4.3.1: 不将默认主题 '默认' 加入关键词，避免无意义文件被错误分组
+      ...(file.contentTheme && file.contentTheme !== '默认' ? [file.contentTheme] : []),
     ]),
     entities,
     theme,
+    // V0.4.3.1: 保存原始 contentTheme，供 Group Contract 使用
+    contentTheme: file.contentTheme || '默认',
     source: summary.method ? 'content-summary' : 'metadata',
     dir: file.dir ? path.basename(file.dir) : '',
     name: file.name,

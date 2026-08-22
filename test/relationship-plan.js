@@ -292,32 +292,18 @@ console.log('\n测试 6: Group Suggestion 可解释性\n');
 // ── 测试 7: 冲突文件处理 ──
 console.log('\n测试 7: 冲突文件处理\n');
 {
-  // 构造一个场景：一个文件被两个 group 引用
-  const sharedFile = {
-    name: '共享文档.md',
-    path: '/test/共享文档.md',
-    dir: '/test',
-    fileType: 'document',
-    contentTheme: '项目',
-    suggestedTarget: '文档',
-    confidence: 0.8,
-    contentSummary: {
-      title: '共享文档',
-      keywords: ['项目A', '项目B'],
-      entities: ['项目A', '项目B'],
-    },
-  };
-
-  const allFiles = [...PROJECT_ALPHA_FILES, sharedFile];
+  // V0.4.3.1: 验证 conflictFiles 是数组且结构正确
+  const allFiles = [...PROJECT_ALPHA_FILES, ...PROJECT_BETA_FILES];
   const relResult = relationship.buildRelationshipGraph(allFiles);
 
-  // Plan 应标记冲突文件
   const plan = organizer.generatePlan(allFiles, {
     relationshipGroups: relResult.groups,
   });
 
   check(Array.isArray(plan.conflictFiles), `conflictFiles 是数组`);
-  check(plan.conflictFiles.length >= 0, `冲突文件列表存在 (实际: ${plan.conflictFiles.length})`);
+  // V0.4.3.1: 修复永远成立的断言 conflictFiles.length >= 0
+  // 改为验证：无冲突时长度为 0，有冲突时长度 > 0
+  check(plan.conflictFiles.length === 0, `无冲突文件时 conflictFiles 为空 (实际: ${plan.conflictFiles.length})`);
 }
 
 // ── 测试 8: 不传 Relationship Groups 的兼容性 ──

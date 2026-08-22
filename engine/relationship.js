@@ -101,6 +101,53 @@ function buildRelationshipGraph(files, opts = {}) {
   // 5. Group Cohesion 检测（替代简单连通分量）
   const groups = detectCohesiveGroups(graph, fingerprints, edges);
 
+  // 5b. V0.4.3.1: Group Contract 完整化 — 补充 themes / keywords / sharedKeywords / file metadata
+  for (const group of groups) {
+    const fps = group.files.map(id => {
+      const fp = fingerprints.find(f => f.id === id);
+      return fp ? fp.fingerprint : null;
+    }).filter(Boolean);
+
+    // 主题（V0.4.3.1: 使用 contentTheme 而非 title，避免文件标题被误用为主题）
+    group.themes = [...new Set(fps.map(fp => fp.contentTheme || fp.theme))];
+
+    // 关键词（并集）
+    const allKeywords = new Set();
+    for (const fp of fps) {
+      for (const k of fp.keywords || []) allKeywords.add(k);
+    }
+    group.keywords = [...allKeywords];
+
+    // 共享关键词（出现在所有文件中的关键词）
+    if (fps.length >= 2) {
+      const sharedKw = new Set(fps[0].keywords || []);
+      for (let i = 1; i < fps.length; i++) {
+        const kwSet = new Set(fps[i].keywords || []);
+        for (const k of [...sharedKw]) {
+          if (!kwSet.has(k)) sharedKw.delete(k);
+        }
+      }
+      group.sharedKeywords = [...sharedKw];
+    } else {
+      group.sharedKeywords = [];
+    }
+
+    // 文件元数据（补充 dir / name，供 Group Namer 使用）
+    group.files = group.files.map(id => {
+      const fp = fingerprints.find(f => f.id === id);
+      if (fp && fp.fingerprint) {
+        return {
+          path: id,
+          name: fp.fingerprint.name,
+          dir: fp.fingerprint.dir,
+          fileType: fp.file?.fileType,
+          suggestedTarget: fp.file?.suggestedTarget,
+        };
+      }
+      return { path: id, name: id };
+    });
+  }
+
   // 6. 统计
   const stats = {
     totalFiles: files.length,
@@ -387,8 +434,10 @@ function buildGroupReason(groupFiles, fpMap, coreEntities, cohesion, entityCover
   }
 
   // 核心实体（真共享）
-  if (coreEntities.length > 0) {
-    parts.push(`核心共享实体: ${coreEntities.slice(0, 3).join(', ')}`);
+  // V0.4.3.1: coreEntities 可能是 Set 或 Array，统一处理
+  const entArr = coreEntities instanceof Set ? [...coreEntities] : coreEntities;
+  if (entArr.length > 0) {
+    parts.push(`核心共享实体: ${entArr.slice(0, 3).join(', ')}`);
     parts.push(`实体覆盖率: ${Math.round(entityCoverage * 100)}%`);
   }
 
@@ -495,10 +544,19 @@ function generateReport(result) {
   const groupReports = groups.map(group => {
     const analysis = analyzeGroup(group, fingerprints);
     return {
-      files: analysis.files.map(p => ({
-        path: p,
-        name: idToName.get(p) || p.split('/').pop() || p,
-      })),
+      files: analysis.files.map(p => {
+        // V0.4.3.1: group.files 可能是字符串或对象
+        if (typeof p === 'object' && p !== null) {
+          return {
+            path: p.path || p.name,
+            name: p.name || (p.path ? p.path.split('/').pop() : ''),
+          };
+        }
+        return {
+          path: p,
+          name: idToName.get(p) || (p ? p.split('/').pop() : '') || p,
+        };
+      }),
       suggestedName: analysis.suggestedName,
       reason: analysis.reason,
       confidence: analysis.confidence,

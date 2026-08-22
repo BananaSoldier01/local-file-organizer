@@ -42,7 +42,7 @@ const API = {
   classify(files, config) { return this.post('/api/classify', { files, config }); },
   classifyProgress(classifyId) { return this.get('/api/classify-progress?classifyId=' + encodeURIComponent(classifyId)); },
   classifyResult(classifyId) { return this.get('/api/classify-result?classifyId=' + encodeURIComponent(classifyId)); },
-  generatePlan(files, options) { return this.post('/api/plan', { files, options: { targetRoot: options?.targetRoot }, scanId: options?.scanId }); },
+  generatePlan(files, options) { return this.post('/api/plan', { files, options: { targetRoot: options?.targetRoot, relationshipGroups: options?.relationshipGroups }, scanId: options?.scanId }); },
   executePlan(opts) { return this.post('/api/execute', { planId: opts?.planId, conflictStrategy: opts?.conflictStrategy }); },
   executeProgress(execId) { return this.get('/api/execute-progress?execId=' + encodeURIComponent(execId)); },
   executeCancel(execId) { return this.post('/api/execute-cancel', { id: execId }); },
@@ -137,6 +137,7 @@ const state = {
   selectedFiles: new Set(),   // 用户选中的文件（用于批量操作）
   excludedFiles: new Set(),   // 排除的文件路径（不参与整理）
   customTargetRoot: null,     // 自定义目标根目录
+  relationshipGroups: [], // V0.4.3: Relationship Group 列表
   fileTypes: [],      // 文件类型列表
   settings: {},
   filters: {
@@ -496,11 +497,14 @@ async function startScan(folderPath) {
     const classifiedData = (await API.classifyResult(classifyId)).data;
     state.classifiedFiles = classifiedData.results || classifiedData;
     state.projectGroups = classifiedData.projectGroups || [];
+    // V0.4.3: 保存 Relationship Groups，传递给 Plan 生成
+    state.relationshipGroups = classifiedData.relationshipGroups || [];
 
-    // 5. 生成方案（携带 scanId 获取可信 sourceRoot）
+    // 5. 生成方案（携带 scanId 获取可信 sourceRoot + relationshipGroups）
     const planResult = await API.generatePlan(state.classifiedFiles, {
       targetRoot: state.customTargetRoot,
       scanId: state.scanId,
+      relationshipGroups: state.relationshipGroups,
     });
     // 使用 Revision 模型初始化
     state.desiredRevision = 1;
@@ -584,6 +588,9 @@ function renderWorkspace() {
   // 更新 Review Queue
   updateReviewQueue();
 
+  // V0.4.3.1: 渲染 Relationship Group Suggestions
+  renderGroupSuggestions();
+
   // 更新筛选芯片状态
   const reviewChip = $('filter-review-only');
   const excludedChip = $('filter-show-excluded');
@@ -614,6 +621,57 @@ function renderWorkspace() {
   // Execute 按钮状态由 Revision 模型统一控制
   updateExecuteBtnState();
   updateSelectionUI();
+}
+
+/**
+ * V0.4.3.1: 渲染 Relationship Group Suggestions（轻量展示）
+ * 在 Review 页面显示"发现 X 个相关文件组"，可展开查看文件、名称和依据。
+ */
+function renderGroupSuggestions() {
+  const container = $('group-suggestions');
+  const list = $('gs-list');
+  const countEl = $('gs-count');
+
+  // 从当前 Plan 中获取 groupSuggestions
+  const suggestions = state.plan?.groupSuggestions || [];
+
+  if (suggestions.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'block';
+  countEl.textContent = suggestions.length + ' 组';
+  list.innerHTML = '';
+
+  for (const suggestion of suggestions) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'gs-group';
+
+    const fileNames = suggestion.files.map(f => f.name || f.path).slice(0, 5);
+    const moreCount = suggestion.files.length - fileNames.length;
+
+    groupEl.innerHTML = `
+      <div class="gs-group-head">
+        <span class="gs-group-name">${escapeHtml(suggestion.groupName)}</span>
+        <span class="gs-group-confidence">${Math.round(suggestion.confidence * 100)}%</span>
+      </div>
+      <div class="gs-group-meta">${escapeHtml(suggestion.nameReason || '')}</div>
+      <div class="gs-group-files">
+        ${fileNames.map(f => `<span class="gs-file-tag" title="${escapeHtml(f)}">${escapeHtml(f)}</span>`).join('')}
+        ${moreCount > 0 ? `<span class="gs-file-tag">+${moreCount} 更多</span>` : ''}
+      </div>
+    `;
+
+    list.appendChild(groupEl);
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 function renderWorkspaceRow(file) {
@@ -856,6 +914,7 @@ async function regenerateLatestPlan() {
       const result = await API.generatePlan(effectiveFiles, {
         targetRoot: state.customTargetRoot,
         scanId: state.scanId,
+        relationshipGroups: state.relationshipGroups,
       });
       planData = result.data;
     }
@@ -942,6 +1001,7 @@ async function retryPlanGeneration() {
       const result = await API.generatePlan(effectiveFiles, {
         targetRoot: state.customTargetRoot,
         scanId: state.scanId,
+        relationshipGroups: state.relationshipGroups,
       });
       planData = result.data;
     }
@@ -1148,6 +1208,7 @@ function newScan() {
   state.excludedFiles.clear();
   state.customTargetRoot = null;
   state.projectGroups = [];
+  state.relationshipGroups = [];
   $('folder-path-input').value = '';
   $('custom-target-input').value = '';
   $('search-input').value = '';

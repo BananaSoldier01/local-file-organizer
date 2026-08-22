@@ -610,3 +610,105 @@ html, body {
   .sidebar { display: none; }
   .workspace-table th.th-type { display: none; }
 }
+
+/* ── Relationship Group Suggestions (V0.4.3.1) ─────────── */
+.group-suggestions {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 12px 16px;
+}
+
+.gs-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+
+.gs-title {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+}
+
+.gs-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.gs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gs-group {
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.gs-group:hover {
+  background: var(--border);
+}
+
+.gs-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.gs-group-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.gs-group-confidence {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.gs-group-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.gs-group-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.gs-file-tag {
+  font-size: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  border-radius: 4px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-group-reason {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  font-style: italic;
+}
