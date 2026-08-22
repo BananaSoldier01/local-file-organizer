@@ -1,226 +1,194 @@
 /**
- * decision-engine.js — Unified Decision Engine (V0.5.2)
+ * decision-engine.js — Unified Decision Engine (V0.5.3)
  *
- * 统一决策中心。将分散在 Organizer 中的判断逻辑集中管理。
+ * 可扩展的 Decision Intelligence Framework。
  *
- * 输入：
- *   file + Memory + File State + Relationship State + Agent History
- *
- * 输出：
- *   Decision + Evidence + Confidence
+ * Pipeline:
+ *   Collect Candidates
+ *   → Normalize Candidates
+ *   → Resolve Conflict
+ *   → Generate Final Decision
+ *   → Generate Explanation
  *
  * 优先级链：
- *   User Override
- *   > Trusted Memory
- *   > Learned Memory
- *   > Existing Organization State
- *   > Relationship State
- *   > Classification
+ *   User Override > Trusted Memory > Learned Memory
+ *   > Existing Org State > Relationship State > Classification
  *
- * 原则：
- * - 每个决策必须携带可解释证据
- * - 观察状态 > 推断状态
- * - 用户操作永远最高优先级
+ * 为未来 LLM / Embedding Provider 预留接口。
  */
 
 const path = require('path');
-const memory = require('./memory');
-const fileState = require('./file-state');
-const relationshipState = require('./relationship-state');
-const agentHistory = require('./agent-history');
-
-// ── 优先级常量 ────────────────────────────────────────────
-const PRIORITY = {
-  USER_OVERRIDE:          100,
-  TRUSTED_MEMORY:          80,
-  LEARNED_MEMORY:          60,
-  EXISTING_ORG_STATE:      40,
-  RELATIONSHIP_STATE:      20,
-  CLASSIFICATION:          10,
-};
+const decisionProvider = require('./decision-provider');
 
 // ── 决策引擎 ──────────────────────────────────────────────
 /**
- * 为单个文件生成整理决策。
+ * 为单个文件生成整理决策（Pipeline 架构）。
  *
  * @param {object} file - 分类后的文件
  * @param {object} context - 决策上下文
- * @param {object} [context.relationshipGroups] - Relationship Group 数组
- * @param {object} [context.groupSuggestions] - Group Suggestion 数组
- * @param {object} [context.options] - 额外选项
+ * @param {object} [options]
  * @returns {object} 决策结果
  */
 function decide(file, context = {}) {
-  const {
-    relationshipGroups = null,
-    groupSuggestions = [],
-    options = {},
-  } = context;
+  // Step 1: Collect Candidates
+  const candidates = decisionProvider.collectCandidates(file, context);
 
-  const customTargets = options.customTargets || {};
-  const targetRoot = options.targetRoot || null;
-  const flatten = options.flatten || false;
+  // Step 2: Normalize Candidates
+  const normalized = normalizeCandidates(candidates);
 
-  // 收集所有候选决策
-  const candidates = [];
+  // Step 3: Resolve Conflict
+  const resolved = resolveConflict(normalized);
 
-  // ── 1. User Override（最高优先级） ──
-  if (file._userOverride) {
-    candidates.push({
-      source: 'user_override',
-      priority: PRIORITY.USER_OVERRIDE,
-      target: customTargets[file.suggestedTarget] || file.suggestedTarget || '其他',
-      reason: '用户手工修改目标目录',
-      evidence: {
-        type: 'user_action',
-        detail: `用户将目标设置为 "${file.suggestedTarget}"`,
-      },
-      confidence: 1.0,
-    });
-  }
+  // Step 4: Generate Final Decision
+  const final = generateFinal(resolved, file, context);
 
-  // ── 2. Memory（Trusted > Learned） ──
-  const memSug = memory.lookupMemorySuggestion(file);
-  if (memSug && memSug.participates) {
-    const isTrusted = memSug.level === 'trusted';
-    candidates.push({
-      source: isTrusted ? 'trusted_memory' : 'learned_memory',
-      priority: isTrusted ? PRIORITY.TRUSTED_MEMORY : PRIORITY.LEARNED_MEMORY,
-      target: customTargets[memSug.target] || memSug.target,
-      reason: memSug.reason,
-      evidence: {
-        type: 'memory',
-        detail: memSug.reason,
-        memoryId: memSug.entries?.[0]?.id || '',
-        level: memSug.level,
-        score: memSug.confidence,
-        matchScore: memSug.matchScore,
-      },
-      confidence: memSug.confidence,
-    });
-  }
-
-  // ── 3. Existing Organization State ──
-  const existingTarget = fileState.getOrganizationTargets ?
-    fileState.getOrganizationTargets().get(file.path) : null;
-  if (existingTarget) {
-    candidates.push({
-      source: 'existing_org_state',
-      priority: PRIORITY.EXISTING_ORG_STATE,
-      target: existingTarget,
-      reason: `文件历史组织目录为「${existingTarget}」，保持一致性`,
-      evidence: {
-        type: 'file_state',
-        detail: `File State 记录该文件目标为 "${existingTarget}"`,
-      },
-      confidence: 0.85,
-    });
-  }
-
-  // ── 4. Relationship State ──
-  const relGroup = relationshipState.getGroupContaining ?
-    relationshipState.getGroupContaining(file.path) : null;
-  if (relGroup) {
-    candidates.push({
-      source: 'relationship_state',
-      priority: PRIORITY.RELATIONSHIP_STATE,
-      target: relGroup.name,
-      reason: `文件属于 Group「${relGroup.name}」（持久化关系状态）`,
-      evidence: {
-        type: 'relationship_state',
-        detail: `Relationship State Group "${relGroup.name}"，包含 ${relGroup.files.length} 个文件`,
-        groupId: relGroup.groupId,
-        entities: [...relGroup.entities],
-      },
-      confidence: relGroup.confidence || 0.7,
-    });
-  }
-
-  // ── 5. Relationship Group Suggestion（来自 Relationship Engine） ──
-  if (relationshipGroups && relationshipGroups.length > 0) {
-    for (let g = 0; g < relationshipGroups.length; g++) {
-      const group = relationshipGroups[g];
-      const groupFiles = group.files || [];
-      const inGroup = groupFiles.some(f => {
-        const fId = typeof f === 'string' ? f : (f.path || f.name);
-        return fId === (file.path || file.name);
-      });
-      if (inGroup) {
-        const suggestion = groupSuggestions.find(s =>
-          s.files.some(f => {
-            const fId = typeof f === 'string' ? f : (f.path || f.name);
-            return fId === (file.path || file.name);
-          })
-        );
-        const groupName = suggestion ? suggestion.groupName : (group.name || '未命名');
-        candidates.push({
-          source: 'relationship',
-          priority: PRIORITY.RELATIONSHIP_STATE,
-          target: groupName,
-          reason: suggestion ?
-            `属于 Group「${groupName}」（关系分析建议）` :
-            `属于 Group「${groupName}」`,
-          evidence: {
-            type: 'relationship',
-            detail: suggestion ?
-              `Relationship Group "${groupName}"，置信度 ${suggestion.confidence || group.cohesion}` :
-              `Relationship Group "${groupName}"`,
-            cohesion: group.cohesion,
-            coreEntities: group.coreEntities ? [...group.coreEntities] : [],
-          },
-          confidence: suggestion ? (suggestion.confidence || 0.7) : (group.cohesion || 0.5),
-        });
-        break; // 只取第一个匹配的 Group
-      }
-    }
-  }
-
-  // ── 6. Classification（兜底） ──
-  candidates.push({
-    source: 'classification',
-    priority: PRIORITY.CLASSIFICATION,
-    target: customTargets[file.suggestedTarget] || file.suggestedTarget || '其他',
-    reason: `基于内容分类：${file.contentTheme || '默认'}`,
-    evidence: {
-      type: 'classification',
-      detail: `Classification: theme="${file.contentTheme}", confidence=${file.confidence}`,
-      theme: file.contentTheme,
-      confidence: file.confidence,
-    },
-    confidence: file.confidence || 0.5,
-  });
-
-  // ── 选择最高优先级 ──
-  candidates.sort((a, b) => b.priority - a.priority);
-  const best = candidates[0];
-
-  // 构建完整证据链
-  const evidenceChain = candidates.map(c => ({
-    source: c.source,
-    priority: c.priority,
-    target: c.target,
-    reason: c.reason,
-    confidence: c.confidence,
-  }));
+  // Step 5: Generate Explanation
+  const explanation = generateExplanation(final, normalized, file);
 
   return {
-    target: best.target,
-    source: best.source,
-    priority: best.priority,
-    confidence: best.confidence,
-    reason: best.reason,
-    evidence: best.evidence,
-    evidenceChain,
-    candidates: candidates.map(c => ({
+    ...final,
+    explanation,
+    candidates: normalized.map(c => ({
       source: c.source,
       target: c.target,
       priority: c.priority,
+      confidence: c.confidence,
     })),
   };
 }
 
 /**
- * 批量决策（为多个文件生成决策）。
+ * Step 2: 标准化候选决策。
+ *
+ * @param {object[]} candidates - 原始候选
+ * @returns {object[]} 标准化候选
+ */
+function normalizeCandidates(candidates) {
+  return candidates.map(c => ({
+    source: c.source,
+    target: c.target,
+    confidence: c.confidence,
+    priority: c.priority,
+    evidence: c.evidence || [],
+  })).sort((a, b) => b.priority - a.priority);
+}
+
+/**
+ * Step 3: 冲突解决 — 选择最高优先级。
+ * 相同 target 的候选合并 evidence。
+ *
+ * @param {object[]} candidates - 标准化候选
+ * @returns {object[]} 冲突解决后的候选
+ */
+function resolveConflict(candidates) {
+  if (candidates.length === 0) return [];
+
+  // 按优先级排序，同 target 合并
+  const merged = new Map();
+  for (const c of candidates) {
+    const key = c.target;
+    if (!merged.has(key)) {
+      merged.set(key, { ...c, evidence: [...c.evidence] });
+    } else {
+      const existing = merged.get(key);
+      existing.evidence.push(...c.evidence);
+      existing.confidence = Math.max(existing.confidence, c.confidence);
+    }
+  }
+
+  // 按优先级排序
+  return Array.from(merged.values()).sort((a, b) => b.priority - a.priority);
+}
+
+/**
+ * Step 4: 生成最终决策。
+ *
+ * @param {object[]} resolved - 冲突解决后的候选
+ * @param {object} file - 文件
+ * @param {object} context - 上下文
+ * @returns {object} 最终决策
+ */
+function generateFinal(resolved, file, context) {
+  if (resolved.length === 0) {
+    // 兜底：使用 Classification
+    const customTargets = context.options?.customTargets || {};
+    return {
+      target: customTargets[file.suggestedTarget] || file.suggestedTarget || '其他',
+      source: 'classification',
+      priority: 10,
+      confidence: file.confidence || 0.5,
+      reason: `基于内容分类：${file.contentTheme || '默认'}`,
+      evidence: {
+        type: 'classification',
+        detail: `Classification: theme="${file.contentTheme}", confidence=${file.confidence}`,
+        theme: file.contentTheme,
+        confidence: file.confidence,
+      },
+      evidenceChain: [],
+    };
+  }
+
+  const best = resolved[0];
+  return {
+    target: best.target,
+    source: best.source,
+    priority: best.priority,
+    confidence: best.confidence,
+    reason: best.evidence[0]?.detail || `基于 ${best.source} 决策`,
+    evidence: best.evidence[0] || { type: best.source, detail: '' },
+    evidenceChain: resolved,
+  };
+}
+
+/**
+ * Step 5: 生成结构化解释。
+ *
+ * @param {object} final - 最终决策
+ * @param {object[]} candidates - 所有候选
+ * @param {object} file - 文件
+ * @returns {object} 结构化解释
+ */
+function generateExplanation(final, candidates, file) {
+  const reasons = [];
+  const sources = new Set();
+
+  // 主决策原因
+  if (final.evidence) {
+    reasons.push(final.evidence.detail);
+    sources.add(final.evidence.type);
+  }
+
+  // 其他候选的简要说明
+  for (const c of candidates.slice(1)) {
+    if (c.evidence && c.evidence.length > 0) {
+      sources.add(c.evidence[0].type);
+    }
+  }
+
+  return {
+    summary: `建议整理到 "${final.target}"`,
+    reasons: reasons.length > 0 ? reasons : [`基于 ${final.source} 决策`],
+    confidence: final.confidence,
+    confidenceLabel: confidenceLabel(final.confidence),
+    sources: Array.from(sources),
+    primarySource: final.source,
+    alternativeCount: Math.max(0, candidates.length - 1),
+  };
+}
+
+/**
+ * 置信度标签。
+ */
+function confidenceLabel(confidence) {
+  if (confidence >= 0.9) return '极高';
+  if (confidence >= 0.7) return '高';
+  if (confidence >= 0.5) return '中等';
+  if (confidence >= 0.3) return '较低';
+  return '低';
+}
+
+/**
+ * 批量决策。
  *
  * @param {object[]} files - 文件列表
  * @param {object} context - 决策上下文
@@ -261,7 +229,7 @@ function resolveTargetPath(decision, file, options = {}) {
 }
 
 /**
- * 生成决策摘要（用于 Plan 和 UI）。
+ * 生成决策摘要。
  *
  * @param {Map<string, object>} decisions - 决策映射
  * @returns {object} 摘要
@@ -289,5 +257,6 @@ module.exports = {
   decideBatch,
   resolveTargetPath,
   summarizeDecisions,
-  PRIORITY,
+  generateExplanation,
+  confidenceLabel,
 };

@@ -1,6 +1,6 @@
 {
   "name": "file-organizer",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "本地文件智能整理器 — 扫描、理解、整理本地文件",
   "main": "server.js",
   "scripts": {
@@ -20,7 +20,8 @@
     "test:incremental": "node test/incremental.js",
     "test:agent-runtime": "node test/agent-runtime.js",
     "test:decision-engine": "node test/decision-engine.js",
-    "test": "npm run test:smoke && npm run test:integration && npm run test:scenario && npm run test:e2e && npm run test:session-ttl && npm run test:evaluation && npm run test:relationship && npm run test:relationship-plan && npm run test:memory && npm run test:memory-plan && npm run test:feedback-loop && npm run test:memory-v2 && npm run test:incremental && npm run test:agent-runtime && npm run test:decision-engine"
+    "test:decision-evaluation": "node test/decision-evaluation.js",
+    "test": "npm run test:smoke && npm run test:integration && npm run test:scenario && npm run test:e2e && npm run test:session-ttl && npm run test:evaluation && npm run test:relationship && npm run test:relationship-plan && npm run test:memory && npm run test:memory-plan && npm run test:feedback-loop && npm run test:memory-v2 && npm run test:incremental && npm run test:agent-runtime && npm run test:decision-engine && npm run test:decision-evaluation"
   },
   "keywords": [
     "file-organizer",
