@@ -92,17 +92,20 @@ class MemoryProvider extends DecisionProvider {
     const isTrusted = memSug.level === 'trusted';
     const customTargets = context.options?.customTargets || {};
 
+    // confidence 必须在 0-1 范围内
+    const confidence = Math.min(1, Math.max(0, memSug.confidence || 0.5));
+
     return {
       source: isTrusted ? 'trusted_memory' : 'learned_memory',
       target: customTargets[memSug.target] || memSug.target,
-      confidence: memSug.confidence,
+      confidence,
       priority: isTrusted ? 100 : 80,
       evidence: [{
         type: 'memory',
         detail: memSug.reason,
         memoryId: memSug.entries?.[0]?.id || '',
         level: memSug.level,
-        score: memSug.confidence,
+        score: confidence,
         matchScore: memSug.matchScore,
       }],
     };
@@ -185,6 +188,12 @@ class RelationshipProvider extends DecisionProvider {
         return fId === (file.path || file.name);
       });
       if (inGroup) {
+        // 跳过无意义的单文件组（无实体、无凝聚力）
+        const hasEntities = (group.coreEntities && group.coreEntities.length > 0) ||
+                           (group.entities && group.entities.length > 0);
+        const hasCohesion = (group.cohesion || 0) > 0;
+        if (!hasEntities && !hasCohesion) continue;
+
         const suggestion = (context.groupSuggestions || []).find(s =>
           s.files.some(f => {
             const fId = typeof f === 'string' ? f : (f.path || f.name);
@@ -282,6 +291,67 @@ const DEFAULT_PROVIDERS = [
 ];
 
 /**
+ * 验证 Provider 输出是否符合 Contract。
+ *
+ * Contract：
+ * {
+ *   source: string,       // 必填
+ *   target: string,       // 必填
+ *   confidence: number,   // 必填，0-1
+ *   priority: number,     // 必填
+ *   evidence: array       // 必填，至少 1 条
+ * }
+ *
+ * 注意：
+ * - priority = authority（谁说了算）
+ * - confidence = evidence strength（证据有多强）
+ * - 不要写成 score = priority * confidence
+ *
+ * @param {object} result - Provider 输出
+ * @param {string} providerName - Provider 名称
+ * @returns {object} { valid: boolean, errors: string[] }
+ */
+function validateProviderOutput(result, providerName) {
+  const errors = [];
+
+  if (!result || typeof result !== 'object') {
+    return { valid: false, errors: ['输出必须是对象'] };
+  }
+
+  if (!result.source || typeof result.source !== 'string') {
+    errors.push('source 必须是非空字符串');
+  }
+
+  if (!result.target || typeof result.target !== 'string') {
+    errors.push('target 必须是非空字符串');
+  }
+
+  if (typeof result.confidence !== 'number' || result.confidence < 0 || result.confidence > 1) {
+    errors.push('confidence 必须是 0-1 的数字');
+  }
+
+  if (typeof result.priority !== 'number') {
+    errors.push('priority 必须是数字');
+  }
+
+  if (!Array.isArray(result.evidence) || result.evidence.length === 0) {
+    errors.push('evidence 必须是非空数组');
+  } else {
+    for (let i = 0; i < result.evidence.length; i++) {
+      const ev = result.evidence[i];
+      if (!ev || typeof ev.type !== 'string') {
+        errors.push(`evidence[${i}].type 必须是字符串`);
+      }
+      if (!ev || typeof ev.detail !== 'string') {
+        errors.push(`evidence[${i}].detail 必须是字符串`);
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+/**
  * 运行所有 Provider，收集候选决策。
  *
  * @param {object} file - 分类后的文件
@@ -296,6 +366,12 @@ function collectCandidates(file, context, providers = DEFAULT_PROVIDERS) {
     try {
       const result = provider.evaluate(file, context);
       if (result) {
+        // Contract 验证
+        const validation = validateProviderOutput(result, provider.name);
+        if (!validation.valid) {
+          console.error(`[decision-provider] ${provider.name} 输出不合法:`, validation.errors);
+          continue;
+        }
         candidates.push(result);
       }
     } catch (err) {
@@ -337,5 +413,6 @@ module.exports = {
   collectCandidates,
   getProviders,
   getProvider,
+  validateProviderOutput,
   DEFAULT_PROVIDERS,
 };
