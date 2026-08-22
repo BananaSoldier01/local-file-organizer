@@ -20,6 +20,10 @@ const history = require('./engine/history');
 const memory = require('./engine/memory');
 const feedback = require('./engine/feedback');
 const fileState = require('./engine/file-state');
+const fileIdentity = require('./engine/file-identity');
+const relationshipState = require('./engine/relationship-state');
+const agentHistory = require('./engine/agent-history');
+const scheduler = require('./engine/scheduler');
 
 // ── 配置 ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 38211;
@@ -211,6 +215,25 @@ async function handleAPI(req, res, parsedUrl) {
   }
   if (pathname === '/api/scan/incremental' && req.method === 'POST') {
     return await handleIncrementalScan(req, res);
+  }
+  // ── V0.5.1: Agent Runtime API ──
+  if (pathname === '/api/agent/status' && req.method === 'GET') {
+    return handleAgentStatus(req, res);
+  }
+  if (pathname === '/api/agent/history' && req.method === 'GET') {
+    return handleAgentHistory(req, res);
+  }
+  if (pathname === '/api/agent/scheduler' && req.method === 'GET') {
+    return ok(res, scheduler.getConfig());
+  }
+  if (pathname === '/api/agent/scheduler' && req.method === 'POST') {
+    return await handleSchedulerConfigure(req, res);
+  }
+  if (pathname === '/api/agent/scheduler/trigger' && req.method === 'POST') {
+    return await handleSchedulerTrigger(req, res);
+  }
+  if (pathname === '/api/agent/relationship-state' && req.method === 'GET') {
+    return ok(res, relationshipState.getStateStats());
   }
   fail(res, 404, 'Not found');
 }
@@ -1239,6 +1262,60 @@ async function handleIncrementalScan(req, res) {
         stats: changesWithMoves.stats,
       },
     });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── V0.5.1: Agent Runtime Handlers ──────────────────────────
+function handleAgentStatus(req, res) {
+  try {
+    const fileStats = fileState.getStateStats();
+    const memStats = memory.getMemoryStats();
+    const relStats = relationshipState.getStateStats();
+    const histStats = agentHistory.getHistoryStats();
+    const schedConfig = scheduler.getConfig();
+
+    ok(res, {
+      running: false,
+      lastScan: histStats.newest || null,
+      pendingSuggestions: scheduler.getPendingPlans().length,
+      trackedFiles: fileStats.total,
+      memoryRules: memStats.total,
+      relationshipGroups: relStats.groups,
+      agentEvents: histStats.total,
+      scheduler: {
+        enabled: schedConfig.enabled,
+        intervalMs: schedConfig.intervalMs,
+        lastRunAt: schedConfig.lastRunAt,
+        nextRunAt: schedConfig.nextRunAt,
+      },
+    });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleAgentHistory(req, res) {
+  try {
+    const query = url.parse(req.url, true).query;
+    const events = agentHistory.queryHistory({
+      event: query.event,
+      since: query.since,
+      limit: query.limit ? parseInt(query.limit) : 50,
+    });
+    ok(res, { events, total: events.length });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleSchedulerConfigure(req, res) {
+  try {
+    const body = await readBody(req);
+    const config = scheduler.configure(body);
+    ok(res, config);
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleSchedulerTrigger(req, res) {
+  try {
+    const result = scheduler.triggerRun();
+    ok(res, result);
   } catch (err) { fail(res, 500, err.message); }
 }
 

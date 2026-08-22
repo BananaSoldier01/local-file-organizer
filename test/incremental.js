@@ -44,7 +44,7 @@ console.log('\n测试 1: File State Store 基本操作\n');
   const entry = fileState.upsertFileState(file, { contentTheme: '文档', confidence: 0.8 });
   check(entry.path === '/test/test.txt', `状态路径正确 (实际: ${entry.path})`);
   check(entry.classification.theme === '文档', `分类主题正确 (实际: ${entry.classification.theme})`);
-  check(entry.fingerprint && entry.fingerprint.startsWith('fp_'), `指纹格式正确 (实际: ${entry.fingerprint})`);
+  check(entry.fingerprint && entry.fingerprint.startsWith('l1_'), `指纹格式正确 (实际: ${entry.fingerprint})`);
   check(entry.lastProcessedAt, `有处理时间`);
 
   const retrieved = fileState.getFileState('/test/test.txt');

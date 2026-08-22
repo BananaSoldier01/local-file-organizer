@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const fileIdentity = require('./file-identity');
 
 // ── 存储路径 ──────────────────────────────────────────────
 const STATE_DIR = path.join(os.homedir(), '.local-file-organizer');
@@ -62,25 +63,15 @@ function saveState(data) {
 
 /**
  * 计算文件指纹（用于变化检测）。
+ * V0.5.1: 使用 file-identity 多级指纹。
  *
  * @param {object} file - 文件信息
+ * @param {string} [filePath] - 可选的完整文件路径（用于 Level 2/3）
  * @returns {string} 指纹字符串
  */
-function computeFingerprint(file) {
-  const parts = [
-    file.path || '',
-    file.size || 0,
-    file.modified || 0,
-  ];
-  // 简单哈希
-  let hash = 0;
-  const str = parts.join('|');
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
-  }
-  return 'fp_' + Math.abs(hash).toString(16);
+function computeFingerprint(file, filePath) {
+  // 默认使用 Level 1 快速指纹
+  return fileIdentity.fastFingerprint(file);
 }
 
 /**
