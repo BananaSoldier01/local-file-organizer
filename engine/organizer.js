@@ -44,6 +44,9 @@ function generatePlan(classifiedFiles, options = {}) {
   const conflicts = [];
   const seenTargets = new Map();
 
+  // ── V0.4.3.2: 构建有效文件 ID 集合（与 classifiedFiles 对齐） ──
+  const effectiveFileIds = new Set(classifiedFiles.map(f => f.path || f.name));
+
   // ── V0.4.3: 构建 file → group 映射 ──
   const fileToGroup = new Map();     // file → primary group index
   const fileToGroups = new Map();    // file → [all group indices]
@@ -55,6 +58,8 @@ function generatePlan(classifiedFiles, options = {}) {
       for (const file of group.files) {
         // V0.4.3: group.files 可能是字符串（file ID）或对象
         const fileId = typeof file === 'string' ? file : (file.path || file.name);
+        // V0.4.3.2: 只考虑当前 effectiveFiles 中存在的文件
+        if (!effectiveFileIds.has(fileId)) continue;
         if (!fileToGroups.has(fileId)) {
           fileToGroups.set(fileId, []);
         }
@@ -77,13 +82,16 @@ function generatePlan(classifiedFiles, options = {}) {
   if (relationshipGroups && relationshipGroups.length > 0) {
     for (let g = 0; g < relationshipGroups.length; g++) {
       const group = relationshipGroups[g];
-      // 过滤冲突文件（group.files 可能是字符串或对象）
+      // V0.4.3.2: 过滤冲突文件 + 只保留 effectiveFiles 中的文件
       const groupFiles = group.files.filter(f => {
         const fileId = typeof f === 'string' ? f : (f.path || f.name);
-        return !conflictFiles.has(fileId);
+        if (conflictFiles.has(fileId)) return false;
+        if (!effectiveFileIds.has(fileId)) return false;
+        return true;
       });
 
-      if (groupFiles.length < 2) continue; // 至少 2 个文件才建议
+      // V0.4.3.2: 有效文件不足 2 个时不再作为 group suggestion
+      if (groupFiles.length < 2) continue;
 
       const naming = groupNamer.generateGroupName({
         coreEntities: group.coreEntities,
@@ -97,13 +105,13 @@ function generatePlan(classifiedFiles, options = {}) {
         nameConfidence: naming.confidence,
         nameReason: naming.reason,
         files: groupFiles.map(f => {
+          const fileId = typeof f === 'string' ? f : (f.path || f.name);
           const fileObj = classifiedFiles.find(cf => {
             const cfId = cf.path || cf.name;
-            const fId = typeof f === 'string' ? f : (f.path || f.name);
-            return cfId === fId;
+            return cfId === fileId;
           });
           return {
-            path: typeof f === 'string' ? f : (f.path || f.name),
+            path: fileId,
             name: fileObj ? fileObj.name : (typeof f === 'string' ? f : f.name),
             fileType: fileObj ? fileObj.fileType : null,
             suggestedTarget: fileObj ? fileObj.suggestedTarget : null,
@@ -148,7 +156,10 @@ function generatePlan(classifiedFiles, options = {}) {
     const groupIndex = fileToGroup.get(fileId);
     let targetDirName;
 
-    if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
+    // V0.4.3.2: 用户手工修改目标目录 = override，优先级最高
+    if (file._userOverride) {
+      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
+    } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
       // 文件属于某个 group → 使用 group 名称作为目录
       const group = relationshipGroups[groupIndex];
       const suggestion = groupSuggestions.find(s =>

@@ -744,11 +744,13 @@ function renderWorkspaceRow(file) {
     markPlanChanged();
   });
 
-  // 目标目录修改
+  // 目标目录修改（V0.4.3.2: 标记用户 override，优先级高于 Relationship Group）
   const targetInput = tr.querySelector('.ws-target-input');
   targetInput.addEventListener('change', () => {
     const newTarget = targetInput.value.trim() || '其他';
     file.suggestedTarget = newTarget;
+    // V0.4.3.2: 用户手工修改目标目录 = override，Relationship Group 不得覆盖
+    file._userOverride = true;
     markPlanChanged();
   });
 

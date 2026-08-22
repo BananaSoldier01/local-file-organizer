@@ -463,6 +463,125 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════
+  // 6. Relationship-Aware Browser Flow (V0.4.3.2)
+  // ═══════════════════════════════════════════════
+  console.log('\n6. Relationship-Aware Browser Flow:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-rel-'));
+    // 创建 Project A 文件（共享实体 "项目A"）+ 无关文件
+    // V0.4.3.2: 文件名中 "方案"/"文档" 等被 FILENAME_FUNCTION_WORDS 过滤，只保留 "项目A" 作为实体
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', '项目A_文档1.md'), '# 项目A文档\n项目A相关内容');
+    fs.writeFileSync(path.join(root, 'src', '项目A_文档2.md'), '# 项目A文档\n项目A相关内容');
+    fs.writeFileSync(path.join(root, 'src', 'unrelated.txt'), 'random content unrelated');
+
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await sleep(1000);
+
+    await page.fill('#folder-path-input', root);
+    await sleep(200);
+    await page.click('#btn-select-folder');
+
+    const workspaceReached = await waitForState('state-workspace', 60000);
+    check(workspaceReached, '进入 Workspace');
+
+    if (workspaceReached) {
+      // V0.4.3.2: 验证 Group Suggestions 面板出现
+      const gsVisible = await page.locator('#group-suggestions').isVisible();
+      check(gsVisible, 'Group Suggestions 面板可见');
+
+      // 直接执行（不修改任何 target）
+      const executeReady = await waitForExecuteReady(30000);
+      check(executeReady, 'Execute 按钮可用');
+
+      await page.evaluate(() => {
+        const btn = document.getElementById('btn-execute');
+        if (btn) btn.click();
+      });
+      await sleep(1000);
+      await page.evaluate(() => {
+        const okBtn = document.getElementById('confirm-ok');
+        if (okBtn) okBtn.click();
+      });
+      await sleep(2000);
+
+      const doneReached = await waitForState('state-done', 120000);
+      check(doneReached, '执行完成');
+
+      // 验证：项目A文件归入项目A目录，无关文件归入文档
+      // V0.4.3.2: 目标根目录是 src/（文件所在目录），文件归入 src/项目A/ 和 src/文档/
+      const projADir = path.join(root, 'src', '项目A');
+      const aInProjA = fs.existsSync(path.join(projADir, '项目A_文档1.md'));
+      check(aInProjA, '项目A_文档1.md 归入 项目A/ 目录');
+
+      const docsDir = path.join(root, 'src', '文档');
+      const unrelatedInDocs = fs.existsSync(path.join(docsDir, 'unrelated.txt'));
+      check(unrelatedInDocs, 'unrelated.txt 归入 文档/ 目录（非项目A）');
+    }
+
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ═══════════════════════════════════════════════
+  // 7. User Override > Relationship Suggestion (V0.4.3.2)
+  // ═══════════════════════════════════════════════
+  console.log('\n7. User Override > Relationship Suggestion:');
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-override-'));
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', '项目A_文档1.md'), '# 项目A文档\n项目A相关内容');
+    fs.writeFileSync(path.join(root, 'src', '项目A_文档2.md'), '# 项目A文档\n项目A相关内容');
+
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await sleep(1000);
+
+    await page.fill('#folder-path-input', root);
+    await sleep(200);
+    await page.click('#btn-select-folder');
+
+    const workspaceReached = await waitForState('state-workspace', 60000);
+    check(workspaceReached, '进入 Workspace');
+
+    if (workspaceReached) {
+      // 修改第一个文件的 Target 为 "归档"（用户 override）
+      await page.evaluate(() => {
+        const input = document.querySelector('#workspace-tbody tr:first-child .ws-target-input');
+        if (input) { input.value = '归档'; input.dispatchEvent(new Event('change', { bubbles: true })); }
+      });
+      await sleep(1500);
+
+      const executeReady = await waitForExecuteReady(30000);
+      check(executeReady, 'Execute 按钮可用');
+
+      await page.evaluate(() => {
+        const btn = document.getElementById('btn-execute');
+        if (btn) btn.click();
+      });
+      await sleep(1000);
+      await page.evaluate(() => {
+        const okBtn = document.getElementById('confirm-ok');
+        if (okBtn) okBtn.click();
+      });
+      await sleep(2000);
+
+      const doneReached = await waitForState('state-done', 120000);
+      check(doneReached, '执行完成');
+
+      // 验证：用户 override 的文件归入 "归档/"，不是 "项目A/"
+      const archiveDir = path.join(root, 'src', '归档');
+      const inArchive = fs.existsSync(path.join(archiveDir, '项目A_文档1.md'));
+      check(inArchive, '用户 override 后文件归入 归档/（不是项目A/）');
+
+      // 验证：第二个文件（未 override）仍归入项目A/
+      const projADir = path.join(root, 'src', '项目A');
+      const inProjA = fs.existsSync(path.join(projADir, '项目A_文档2.md'));
+      check(inProjA, '未 override 的文件仍归入 项目A/');
+    }
+
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+
+  // ═══════════════════════════════════════════════
   // Cleanup
   // ═══════════════════════════════════════════════
   await browser.close();

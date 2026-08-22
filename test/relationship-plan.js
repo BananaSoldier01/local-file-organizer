@@ -350,6 +350,59 @@ console.log('\n测试 10: Group Naming — 目录上下文\n');
   check(naming.name === '南京联通', `目录上下文命名应为 "南京联通" (实际: "${naming.name}")`);
 }
 
+// ── 测试 11: User Override > Relationship Suggestion (V0.4.3.2) ──
+console.log('\n测试 11: User Override > Relationship Suggestion\n');
+{
+  // 用户手工修改目标目录后，Relationship Group 不得覆盖
+  const allFiles = [...PROJECT_ALPHA_FILES];
+  // 标记第一个文件为用户 override
+  allFiles[0]._userOverride = true;
+  allFiles[0].suggestedTarget = '归档';
+
+  const relResult = relationship.buildRelationshipGraph(allFiles);
+  const plan = organizer.generatePlan(allFiles, {
+    relationshipGroups: relResult.groups,
+  });
+
+  // override 文件应归入 "归档"，不是 "项目A"
+  const overrideMove = plan.moves.find(m => m.from.includes('项目A方案'));
+  check(overrideMove && overrideMove.to.includes('归档'),
+    `用户 override 的文件应归入 "归档" (实际: ${overrideMove?.to || 'N/A'})`);
+  // V0.4.3.2: 检查目录名而非完整路径（文件名可能包含"项目A"）
+  const overrideDir = overrideMove ? path.dirname(overrideMove.to) : '';
+  check(overrideDir && !path.basename(overrideDir).includes('项目A'),
+    `用户 override 的文件不应归入 "项目A" 目录 (实际: ${overrideDir})`);
+
+  // 未 override 的文件仍归入项目A
+  const normalMove = plan.moves.find(m => m.from.includes('项目A预算'));
+  check(normalMove && normalMove.to.includes('项目A'),
+    `未 override 的文件仍归入 "项目A" (实际: ${normalMove?.to || 'N/A'})`);
+}
+
+// ── 测试 12: Exclude 后 Relationship Group 与 effectiveFiles 同步 (V0.4.3.2) ──
+console.log('\n测试 12: Exclude 后 Relationship Group 同步\n');
+{
+  // 排除部分文件后，Group Suggestion 应与 effectiveFiles 对齐
+  const allFiles = [...PROJECT_ALPHA_FILES];
+  // 排除 2 个文件，只剩 1 个 → 不应再有 group suggestion
+  const effectiveFiles = allFiles.slice(0, 1); // 只保留 1 个
+
+  const relResult = relationship.buildRelationshipGraph(allFiles);
+  // 传入 effectiveFiles（已排除 2 个），relationshipGroups 仍为旧快照
+  const plan = organizer.generatePlan(effectiveFiles, {
+    relationshipGroups: relResult.groups,
+  });
+
+  // 只剩 1 个有效文件 → 不应有 group suggestion
+  check(plan.groupSuggestions.length === 0,
+    `排除后只剩 1 个文件，不应有 group suggestion (实际: ${plan.groupSuggestions.length})`);
+  // 该文件应使用分类建议，而非 group 名称
+  const move = plan.moves[0];
+  const moveDir = move ? path.dirname(move.to) : '';
+  check(moveDir && !path.basename(moveDir).includes('项目A'),
+    `排除后单文件不应归入 "项目A" group 目录 (实际: ${moveDir})`);
+}
+
 // ── 结果汇总 ──
 console.log('\n' + '='.repeat(50));
 console.log(`关系感知整理集成测试: ${passed} 通过, ${failed} 失败, 共 ${passed + failed} 项`);
