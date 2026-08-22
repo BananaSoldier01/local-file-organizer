@@ -19,6 +19,7 @@ const executor = require('./engine/executor');
 const history = require('./engine/history');
 const memory = require('./engine/memory');
 const feedback = require('./engine/feedback');
+const fileState = require('./engine/file-state');
 
 // ── 配置 ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 38211;
@@ -201,6 +202,16 @@ async function handleAPI(req, res, parsedUrl) {
   if (pathname === '/api/feedback' && req.method === 'POST') {
     return await handleFeedback(req, res);
   }
+  // ── V0.5.0: Agent State API ──
+  if (pathname === '/api/state' && req.method === 'GET') {
+    return handleGetState(req, res);
+  }
+  if (pathname === '/api/state/clear' && req.method === 'POST') {
+    return handleClearState(req, res);
+  }
+  if (pathname === '/api/scan/incremental' && req.method === 'POST') {
+    return await handleIncrementalScan(req, res);
+  }
   fail(res, 404, 'Not found');
 }
 
@@ -222,6 +233,7 @@ const jobMaps = {
   scan: new Map(),
   classify: new Map(),
   execute: new Map(),
+  incScan: new Map(),
 };
 
 // ── 受信任链路存储 ──────────────────────────────────────────
@@ -1153,6 +1165,80 @@ async function handleDeleteMemory(req, res, pathname) {
     }
     memory.deleteEntry(id);
     ok(res, { deleted: id });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+// ── V0.5.0: Agent State Handlers ──────────────────────────
+function handleGetState(req, res) {
+  try {
+    const stats = fileState.getStateStats();
+    const state = fileState.exportState();
+    ok(res, {
+      stats,
+      entries: state.entries,
+      version: state.version,
+    });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+function handleClearState(req, res) {
+  try {
+    fileState.clearState();
+    ok(res, { cleared: true });
+  } catch (err) { fail(res, 500, err.message); }
+}
+
+async function handleIncrementalScan(req, res) {
+  try {
+    const body = await readBody(req);
+    const { rootPath, options } = body;
+    if (!rootPath) return fail(res, 400, '缺少 rootPath');
+
+    // 基本路径验证
+    if (typeof rootPath !== 'string' || rootPath.length > 1024) {
+      return fail(res, 400, '无效的路径');
+    }
+    try {
+      const stat = fs.statSync(rootPath);
+      if (!stat.isDirectory()) {
+        return fail(res, 400, '路径不是目录');
+      }
+    } catch (e) {
+      return fail(res, 400, '目录不存在或无法访问: ' + rootPath);
+    }
+
+    // 执行完整扫描
+    const scanResult = await scanner.scanDirectory(rootPath, options || {});
+
+    // 检测变化
+    const changes = fileState.detectChanges(scanResult.files);
+    const changesWithMoves = fileState.detectMoves(changes);
+
+    // 为新增/修改文件创建异步分析任务
+    const incScanId = 'inc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const job = {
+      incScanId,
+      status: 'completed',
+      rootPath,
+      scanResult,
+      changes: changesWithMoves,
+      createdAt: new Date().toISOString(),
+    };
+    jobMaps.incScan = jobMaps.incScan || new Map();
+    jobMaps.incScan.set(incScanId, job);
+
+    ok(res, {
+      incScanId,
+      status: 'completed',
+      changes: {
+        added: changesWithMoves.added.map(a => ({ path: a.file.path, name: a.file.name, reason: a.reason })),
+        modified: changesWithMoves.modified.map(m => ({ path: m.file.path, name: m.file.name, reason: m.reason })),
+        unchanged: changesWithMoves.unchanged.map(u => ({ path: u.file.path, name: u.file.name })),
+        deleted: changesWithMoves.deleted.map(d => ({ path: d.path, reason: d.reason })),
+        moved: changesWithMoves.moved.map(m => ({ from: m.from, to: m.to, reason: m.reason })),
+        stats: changesWithMoves.stats,
+      },
+    });
   } catch (err) { fail(res, 500, err.message); }
 }
 

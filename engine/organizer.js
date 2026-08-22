@@ -31,6 +31,9 @@ const DANGEROUS_DIRS = new Set([
  * @param {boolean} [options.flatten=true]  平铺到目标根目录
  * @param {object} [options.customTargets]  自定义目标目录
  * @param {Array} [options.relationshipGroups]  Relationship Group 数组
+ * @param {boolean} [options.incremental=false]  V0.5.0: 增量模式，只处理变化文件
+ * @param {object} [options.fileState]  V0.5.0: File State Store 实例
+ * @param {object} [options.changeResult]  V0.5.0: 变化检测结果
  * @returns {{moves: Array, conflicts: Array, summary: object, groupSuggestions: Array}}
  */
 function generatePlan(classifiedFiles, options = {}) {
@@ -39,7 +42,15 @@ function generatePlan(classifiedFiles, options = {}) {
     flatten = false,
     customTargets = {},
     relationshipGroups = null,
+    incremental = false,
+    fileState = null,
+    changeResult = null,
   } = options;
+
+  // V0.5.0: 增量模式 — 只处理变化的文件
+  if (incremental && changeResult) {
+    return generateIncrementalPlan(classifiedFiles, options);
+  }
 
   const moves = [];
   const conflicts = [];
@@ -341,4 +352,209 @@ function getPlanStats(plan) {
   };
 }
 
-module.exports = { generatePlan, validatePlan, getPlanStats };
+// ── V0.5.0: Incremental Plan ──────────────────────────────
+/**
+ * 生成增量 Plan — 只处理变化的文件，复用已有 File State。
+ *
+ * 优先级链：
+ *   Current User Override > Trusted Memory > Learned Memory
+ *   > Existing Organization State > Relationship > Classification
+ *
+ * @param {object[]} classifiedFiles  分类后的文件列表（仅变化文件）
+ * @param {object} options
+ * @returns {{moves: Array, conflicts: Array, summary: object, groupSuggestions: Array, incremental: boolean}}
+ */
+function generateIncrementalPlan(classifiedFiles, options = {}) {
+  const {
+    targetRoot,
+    flatten = false,
+    customTargets = {},
+    relationshipGroups = null,
+    fileState = null,
+    changeResult = null,
+  } = options;
+
+  const moves = [];
+  const conflicts = [];
+  const seenTargets = new Map();
+
+  // V0.5.0: 获取已有组织目标（Existing Organization State）
+  const existingTargets = fileState ? fileState.getOrganizationTargets() : new Map();
+
+  // 只处理新增和修改的文件
+  const filesToProcess = [];
+  if (changeResult) {
+    for (const item of changeResult.added) {
+      filesToProcess.push({ file: item.file, reason: 'added' });
+    }
+    for (const item of changeResult.modified) {
+      filesToProcess.push({ file: item.file, reason: 'modified' });
+    }
+    for (const item of changeResult.moved) {
+      filesToProcess.push({ file: item.file, reason: 'moved' });
+    }
+  } else {
+    // fallback: 处理所有文件
+    for (const file of classifiedFiles) {
+      filesToProcess.push({ file, reason: 'all' });
+    }
+  }
+
+  // 构建 file → group 映射（仅对新增文件）
+  const fileToGroup = new Map();
+  const conflictFiles = new Set();
+
+  if (relationshipGroups && relationshipGroups.length > 0) {
+    for (let g = 0; g < relationshipGroups.length; g++) {
+      const group = relationshipGroups[g];
+      for (const file of group.files) {
+        const fId = typeof file === 'string' ? file : (file.path || file.name);
+        if (!fileToGroup.has(fId)) {
+          fileToGroup.set(fId, g);
+        } else {
+          conflictFiles.add(fId);
+        }
+      }
+    }
+  }
+
+  // 预计算 Memory 建议
+  const memorySuggestions = new Map();
+  for (const { file } of filesToProcess) {
+    const memSug = memory.lookupMemorySuggestion(file);
+    if (memSug) {
+      memorySuggestions.set(file.path || file.name, memSug);
+    }
+  }
+
+  // 生成 moves
+  for (const { file, reason } of filesToProcess) {
+    const fileId = file.path || file.name;
+    const groupIndex = fileToGroup.get(fileId);
+    const memSug = memorySuggestions.get(fileId);
+    const existingTarget = existingTargets.get(fileId);
+    let targetDirName;
+    let memoryReason = null;
+    let memoryEvidence = null;
+
+    // V0.5.0 优先级链：
+    // User Override > Trusted Memory > Learned Memory
+    // > Existing Organization State > Relationship > Classification
+    if (file._userOverride) {
+      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
+    } else if (memSug && memSug.participates) {
+      targetDirName = customTargets[memSug.target] || memSug.target;
+      memoryReason = memSug.reason;
+      memoryEvidence = {
+        reason: memSug.reason,
+        memoryId: memSug.entries?.[0]?.id || '',
+        confidence: memSug.level,
+        score: memSug.confidence,
+        matchScore: memSug.matchScore,
+      };
+    } else if (existingTarget) {
+      // V0.5.0: Existing Organization State — 保持历史组织方式
+      targetDirName = existingTarget;
+    } else if (groupIndex !== undefined && !conflictFiles.has(fileId)) {
+      const group = relationshipGroups[groupIndex];
+      const suggestion = (options.groupSuggestions || []).find(s =>
+        s.files.some(f => {
+          const fId = typeof f === 'string' ? f : (f.path || f.name);
+          return fId === fileId;
+        })
+      );
+      if (suggestion) {
+        targetDirName = suggestion.groupName;
+      } else {
+        targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
+      }
+    } else {
+      targetDirName = customTargets[file.suggestedTarget] || file.suggestedTarget || '其他';
+    }
+
+    let targetDir;
+    if (flatten) {
+      targetDir = path.join(file.dir, targetDirName);
+    } else if (targetRoot) {
+      targetDir = path.join(targetRoot, targetDirName);
+    } else {
+      targetDir = path.join(file.dir, targetDirName);
+    }
+
+    let targetPath = path.join(targetDir, file.name);
+
+    if (path.resolve(targetPath) === path.resolve(file.path)) continue;
+
+    const currentDirName = path.basename(file.dir);
+    if (currentDirName === targetDirName) continue;
+
+    if (seenTargets.has(targetPath)) {
+      const ext = path.extname(file.name);
+      const base = path.basename(file.name, ext);
+      let counter = 2;
+      let newPath;
+      do {
+        newPath = path.join(targetDir, `${base}_${counter}${ext}`);
+        counter++;
+      } while (seenTargets.has(newPath));
+
+      seenTargets.set(newPath, { original: file.path, counter });
+      moves.push({
+        from: file.path,
+        to: newPath,
+        category: file.suggestedTarget,
+        fileType: file.fileType,
+        conflictResolution: 'renamed',
+        originalTarget: targetPath,
+        relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
+        memoryReason,
+        memoryEvidence,
+        incremental: true,
+        changeReason: reason,
+      });
+    } else {
+      seenTargets.set(targetPath, { original: file.path });
+      moves.push({
+        from: file.path,
+        to: targetPath,
+        category: file.suggestedTarget,
+        fileType: file.fileType,
+        conflictResolution: null,
+        relationshipGroup: groupIndex !== undefined ? relationshipGroups[groupIndex].coreEntities : null,
+        memoryReason,
+        memoryEvidence,
+        incremental: true,
+        changeReason: reason,
+      });
+    }
+  }
+
+  // 按分类统计
+  const summary = {};
+  for (const move of moves) {
+    if (!summary[move.category]) {
+      summary[move.category] = { count: 0, label: move.category };
+    }
+    summary[move.category].count++;
+  }
+
+  const memoryHits = moves.filter(m => m.memoryReason).length;
+
+  return {
+    moves,
+    conflicts,
+    summary,
+    groupSuggestions: options.groupSuggestions || [],
+    incremental: true,
+    incrementalStats: {
+      totalProcessed: filesToProcess.length,
+      added: changeResult ? changeResult.stats.addedCount : 0,
+      modified: changeResult ? changeResult.stats.modifiedCount : 0,
+      moved: changeResult ? changeResult.stats.movedCount : 0,
+      memoryHits,
+    },
+    memoryStats: { hits: memoryHits, total: filesToProcess.length },
+  };
+}
+
+module.exports = { generatePlan, generateIncrementalPlan, validatePlan, getPlanStats };
